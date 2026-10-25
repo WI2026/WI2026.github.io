@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self'; manifest-src 'self'; connect-src https://opdcnhydkdeesstvhonv.supabase.co wss://opdcnhydkdeesstvhonv.supabase.co; base-uri 'none'; form-action 'none'; object-src 'none'">
+<meta name="referrer" content="no-referrer">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="robots" content="noindex,nofollow">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Teamkalender">
+<meta name="theme-color" content="#e9eef6" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0b0d14" media="(prefers-color-scheme: dark)">
+<title>PentaWerk Teamkalender</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css?v=20261025">
+<script src="vendor/supabase.js?v=20261025" defer></script>
+<script src="config.js?v=20261025" defer></script>
+<script src="pdf.js?v=20261025" defer></script>
+<script src="app.js?v=20261025" defer></script>
+<script src="bg-szene.js?v=20261025" defer></script>
+<script src="bg.js?v=20261025" defer></script>
+</head>
+<body class="locked">
+<div class="login" id="login">
+  <form class="login-card" id="loginForm" novalidate>
+    <div class="login-brand" aria-hidden="true">
+      <img class="mark" src="mark.svg" alt="" width="72" height="70">
+      <span class="wordmark"></span>
+      <span class="claim">Plan &amp; Handwerk aus einer Hand</span>
+    </div>
+    <h1><span class="sr">PentaWerk </span>Teamkalender</h1>
+    <p>Wähle deinen Namen und gib dein Passwort ein.</p>
+    <label class="sr" for="loginName">Name</label>
+    <select id="loginName" class="login-select"><option value="">Namen werden geladen …</option></select>
+    <input type="text" id="loginUser" class="sr" autocomplete="username" tabindex="-1" aria-hidden="true" readonly>
+    <label class="sr" for="loginPw">Passwort</label>
+    <input type="password" id="loginPw" autocomplete="current-password" placeholder="Passwort">
+    <div class="err" id="loginErr" role="alert"></div>
+    <button class="btn primary" id="loginBtn" type="submit">Öffnen</button>
+    <button class="linkbtn" id="setupLink" type="button">Zum ersten Mal hier oder Passwort vergessen?</button>
+    <p class="login-foot">PentaWerk ist eine Marke der Wattcon Installation UG</p>
+  </form>
+  <form class="login-card" id="setupForm" novalidate hidden>
+    <img class="mark" src="mark.svg" alt="" width="48" height="47">
+    <h1>Eigenes Passwort festlegen</h1>
+    <p>Den Einmal-Code bekommst du persönlich von der Kalender-Verwaltung. Er gilt 7 Tage und nur einmal.</p>
+    <label class="sr" for="setupCode">Einmal-Code</label>
+    <input type="text" id="setupCode" placeholder="Einmal-Code, z. B. K7MPX-2QXA9" autocomplete="one-time-code" autocapitalize="characters" spellcheck="false" maxlength="16">
+    <label class="sr" for="setupPw">Neues Passwort</label>
+    <input type="password" id="setupPw" autocomplete="new-password" placeholder="Neues Passwort">
+    <label class="sr" for="setupPw2">Passwort wiederholen</label>
+    <input type="password" id="setupPw2" autocomplete="new-password" placeholder="Passwort wiederholen">
+    <p class="hint">Mindestens 10 Zeichen, am besten ein eigener kurzer Satz. Nicht das bisherige Team-Passwort.</p>
+    <div class="err" id="setupErr" role="alert"></div>
+    <button class="btn primary" id="setupBtn" type="submit">Passwort festlegen</button>
+    <button class="linkbtn" id="backLink" type="button">Zurück zur Anmeldung</button>
+    <p class="login-foot">Code abgelaufen oder schon benutzt? Dann bei der Verwaltung einen neuen holen.</p>
+  </form>
+</div>
+
+<div class="app">
+  <div class="top">
+    <div class="brand">
+      <img class="mark" src="mark.svg" alt="" width="34" height="33">
+      <div class="brand-text">
+        <span class="wordmark" role="img" aria-label="PentaWerk"></span>
+        <div class="brand-sub">
+          <h1><span class="sr">PentaWerk </span>Teamkalender</h1>
+          <span class="status" id="status" data-state="loading"><i></i><span id="statusText">Verbinde …</span></span>
+        </div>
+      </div>
+    </div>
+    <div class="seg tabs" role="tablist" aria-label="Bereich">
+      <button type="button" role="tab" id="tab-kalender" data-tab="kalender" aria-selected="true" aria-controls="calView">Kalender</button>
+      <button type="button" role="tab" id="tab-leads" data-tab="leads" aria-selected="false" aria-controls="leadView" tabindex="-1">Leads<span class="tcnt num" id="leadTabCnt" aria-hidden="true" hidden></span></button>
+      <button type="button" role="tab" id="tab-projekte" data-tab="projekte" aria-selected="false" aria-controls="projView" tabindex="-1">Projekte</button>
+    </div>
+    <div class="acts">
+    <span class="me" id="me"></span>
+    <button class="btn ghost" id="teamBtn" type="button" hidden>Team</button>
+    <button class="btn ghost logout" id="logoutBtn" type="button">Abmelden</button>
+    <button class="btn ghost" id="pdfBtn" type="button" title="Termine ab diesem Monat als PDF speichern, zum Nachsehen ohne Internet">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2.5v7.5M4.8 7 8 10.2 11.2 7M3 13.5h10"/></svg>
+      PDF
+    </button>
+    <button class="btn primary" id="newBtn" type="button">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 3v10M3 8h10"/></svg>
+      <span id="newLbl">Neuer Termin</span>
+    </button>
+    </div>
+  </div>
+
+  <div class="banner" id="banner" hidden>
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="8" cy="8" r="6.2"/><path d="M8 7.2v3.8M8 5v.1"/></svg>
+    <span id="bannerText"></span>
+  </div>
+
+  <div class="calview" id="calView" role="tabpanel" aria-labelledby="tab-kalender">
+  <div class="toolbar">
+    <div class="period">
+      <h2 id="periodTitle">Oktober 2026</h2>
+      <span class="kw num" id="periodKw"></span>
+    </div>
+    <select class="filter" id="personFilter" aria-label="Nach Person filtern"><option value="">Alle Personen</option></select>
+    <div class="seg" role="group" aria-label="Ansicht">
+      <button type="button" data-view="month" aria-pressed="true">Monat</button>
+      <button type="button" data-view="week" aria-pressed="false">Woche</button>
+    </div>
+    <div class="nav">
+      <button class="btn icon" id="prevBtn" type="button" aria-label="Zurück"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.5 5.5 8 10 12.5"/></svg></button>
+      <button class="btn" id="todayBtn" type="button">Heute</button>
+      <button class="btn icon" id="nextBtn" type="button" aria-label="Weiter"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m6 3.5 4.5 4.5L6 12.5"/></svg></button>
+    </div>
+  </div>
+
+  <div class="main">
+    <div class="board" id="board"></div>
+    <aside class="agenda" id="agenda" aria-live="polite"></aside>
+  </div>
+  </div>
+
+  <section class="projview" id="projView" role="tabpanel" aria-labelledby="tab-projekte" hidden>
+    <div class="ptools">
+      <div class="period">
+        <h2>Projekte</h2>
+        <span class="kw" id="projCount"></span>
+      </div>
+      <div class="psearch">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="m10.5 10.5 3 3"/></svg>
+        <input type="search" id="projSearch" placeholder="Suchen" aria-label="Projekte durchsuchen: Kunde, Nummer, Art oder Notiz" autocomplete="off" maxlength="60" enterkeyhint="search">
+      </div>
+      <div class="seg" role="group" aria-label="Stand" id="statusSeg">
+        <button type="button" data-status="laufend" aria-pressed="true">Laufend</button>
+        <button type="button" data-status="fertig" aria-pressed="false">Fertig</button>
+      </div>
+    </div>
+    <div class="plist" id="projList" aria-live="polite"></div>
+    <p class="phint">Nur unterschriebene Aufträge. Gespeichert werden nur Text und Häkchen, keine Dateien oder Fotos.</p>
+  </section>
+
+  <section class="projview leadview" id="leadView" role="tabpanel" aria-labelledby="tab-leads" hidden>
+    <div class="ptools">
+      <div class="period">
+        <h2>Leads</h2>
+        <span class="kw" id="leadCount"></span>
+      </div>
+      <div class="seg" role="group" aria-label="Stand" id="leadSeg">
+        <button type="button" data-lst="offen" aria-pressed="true">Offen</button>
+        <button type="button" data-lst="erledigt" aria-pressed="false">Erledigt</button>
+      </div>
+    </div>
+    <div class="plist" id="leadList"></div>
+    <p class="phint">Neue Leads innerhalb von 24 Stunden kontaktieren. Screenshots werden verkleinert und sind nur für das Team sichtbar.</p>
+  </section>
+</div>
+
+<dialog id="dlg" aria-labelledby="dlgTitle">
+  <form id="form" method="dialog" novalidate autocomplete="off">
+    <h4 id="dlgTitle">Neuer Termin</h4>
+    <div class="field">
+      <label for="f-title">Titel</label>
+      <input type="text" id="f-title" maxlength="120" placeholder="z. B. Zählerschrank Musterstraße 4" autocomplete="off">
+    </div>
+    <div class="field" id="projField">
+      <label for="f-projekt">Projekt <span class="opt">(optional)</span></label>
+      <div class="projpick">
+        <select id="f-projekt"><option value="">Kein Projekt</option></select>
+        <button class="btn" type="button" id="projNewBtn" aria-label="Neues Projekt anlegen">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>Projekt</button>
+      </div>
+      <button class="progrow" type="button" id="progRow" hidden></button>
+    </div>
+    <div class="field">
+      <span class="lbl" id="catLbl">Art</span>
+      <div class="cats" role="radiogroup" aria-labelledby="catLbl" id="cats"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="f-date">Datum</label>
+        <input type="date" id="f-date">
+      </div>
+      <div class="field" style="align-content:end">
+        <label class="toggle" for="f-allday"><input type="checkbox" id="f-allday"> Ganztägig</label>
+      </div>
+    </div>
+    <div class="row" id="timeRow">
+      <div class="field">
+        <label for="f-start">Von</label>
+        <input type="time" id="f-start" step="900" value="08:00">
+      </div>
+      <div class="field">
+        <label for="f-end">Bis</label>
+        <input type="time" id="f-end" step="900" value="09:00">
+      </div>
+    </div>
+    <div class="field">
+      <label for="f-person">Eingetragen von</label>
+      <input type="text" id="f-person" maxlength="60" placeholder="Dein Name" autocomplete="name">
+    </div>
+    <div class="field">
+      <label for="f-note">Notiz <span style="font-weight:400;color:var(--fg-3)">(optional)</span></label>
+      <textarea id="f-note" maxlength="1000" autocomplete="off" placeholder="Adresse, Ansprechpartner, Material …"></textarea>
+    </div>
+    <div class="err" id="formErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn danger" type="button" id="delBtn" hidden>Löschen</button>
+      <span class="stamp" id="stamp"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="cancelBtn">Abbrechen</button>
+      <button class="btn primary" type="submit" id="saveBtn">Speichern</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="teamDlg" aria-labelledby="teamTitle">
+  <div class="team">
+    <h4 id="teamTitle">Team und Zugänge</h4>
+    <p class="hint">Jede Person bekommt einen Einmal-Code und legt damit ihr eigenes Passwort fest. Gib den Code nur der Person selbst, persönlich oder als Direktnachricht. Er gilt einmal und 7 Tage.</p>
+    <ol class="hint steps" id="teamStart" hidden>
+      <li>Bei deinem Namen „Verwalten an“ tippen. Fehlt dein Name, lege dich unten an und setze dabei das Häkchen „darf das Team verwalten“.</li>
+      <li>„Code erzeugen“ tippen und den Code notieren.</li>
+      <li>Abmelden, „Zum ersten Mal hier?“ wählen und mit dem Code dein eigenes Passwort festlegen.</li>
+      <li>Danach erzeugst du die Codes für alle anderen und schaltest das Team-Passwort ab.</li>
+    </ol>
+    <ul class="people" id="people"></ul>
+    <form class="addp" id="addForm" novalidate>
+      <div class="field">
+        <label for="addName">Neue Person</label>
+        <input type="text" id="addName" maxlength="40" placeholder="Vorname oder Name" autocomplete="off">
+      </div>
+      <label class="toggle" for="addAdmin"><input type="checkbox" id="addAdmin"> darf das Team verwalten</label>
+      <button class="btn primary" id="addBtn" type="submit">Anlegen und Code erzeugen</button>
+    </form>
+    <div class="codebox" id="codeBox" hidden role="status">
+      <span id="codeFor"></span>
+      <strong class="code num" id="codeVal"></strong>
+      <span id="codeUntil"></span>
+    </div>
+    <div class="logrow" id="adminTip" hidden>
+      <p class="hint">Das Änderungsprotokoll sehen nur Personen mit Verwalter-Recht. Wer wann was geändert hat, steht dort zwölf Monate lang.</p>
+      <button class="btn" id="logBtn" type="button" hidden>Änderungsprotokoll</button>
+    </div>
+    <div class="teamoff" id="teamOff" hidden>
+      <p class="hint" id="teamOffHint">Das gemeinsame Team-Passwort funktioniert noch. Wenn alle ihr eigenes haben, schalte es ab. Wer es kennt, kommt danach nicht mehr hinein.</p>
+      <button class="btn danger" id="teamOffBtn" type="button">Team-Passwort abschalten</button>
+    </div>
+    <div class="err" id="teamErr" role="alert"></div>
+    <div class="actions"><span class="spacer"></span><button class="btn ghost" id="teamClose" type="button">Schließen</button></div>
+  </div>
+</dialog>
+
+<dialog id="logDlg" aria-labelledby="logTitle">
+  <div class="team">
+    <h4 id="logTitle">Änderungsprotokoll</h4>
+    <p class="hint">Wer hat wann was geändert, neueste zuerst. Vertraulich: enthält Kundendaten.</p>
+    <ul class="log" id="logList"></ul>
+    <div class="err" id="logErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn" id="logMore" type="button" hidden>Ältere laden</button>
+      <button class="btn" id="logCsv" type="button">Als Tabelle speichern</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="logClose" type="button">Schließen</button>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="progDlg" class="sheet" aria-labelledby="progTitle">
+  <div class="prog" id="progBody"></div>
+</dialog>
+
+<dialog id="projDlg" aria-labelledby="projDlgTitle">
+  <form id="projForm" method="dialog" novalidate autocomplete="off">
+    <h4 id="projDlgTitle">Neues Projekt</h4>
+    <div class="field">
+      <label for="p-titel">Kunde und Projekt</label>
+      <input type="text" id="p-titel" maxlength="80" placeholder="z. B. Müller, Hauptstraße 4, Ort" autocomplete="off">
+    </div>
+    <div class="field">
+      <span class="lbl" id="artLbl">Art</span>
+      <div class="cats arten" role="radiogroup" aria-labelledby="artLbl" id="arten"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="p-datum">Auftrag unterschrieben am</label>
+        <input type="date" id="p-datum">
+      </div>
+      <div class="field">
+        <label for="p-nr">Auftragsnummer <span class="opt">(optional)</span></label>
+        <input type="text" id="p-nr" maxlength="30" autocomplete="off">
+      </div>
+    </div>
+    <div class="field">
+      <label for="p-wer">Verantwortlich <span class="opt">(optional)</span></label>
+      <input type="text" id="p-wer" maxlength="60" autocomplete="off" placeholder="Name" list="p-werListe">
+      <datalist id="p-werListe"></datalist>
+    </div>
+    <div class="field">
+      <label for="p-notiz">Notiz <span class="opt">(optional)</span></label>
+      <textarea id="p-notiz" maxlength="1000" autocomplete="off" placeholder="Adresse, Ansprechpartner, Besonderheiten …"></textarea>
+    </div>
+    <div class="field" id="p-statusFeld" hidden>
+      <span class="lbl" id="pStatusLbl">Stand</span>
+      <div class="cats" role="radiogroup" aria-labelledby="pStatusLbl" id="p-status"></div>
+    </div>
+    <details class="vorlage" id="p-vorlage">
+      <summary><span id="p-vorlageSum">Checkliste</span><span class="mehr">anpassen</span></summary>
+      <ul class="vliste" id="p-vorlageListe"></ul>
+      <p class="hint">Weitere Schritte lassen sich später im Projekt ergänzen.</p>
+    </details>
+    <label class="toggle sign" for="p-sign" id="p-signRow"><input type="checkbox" id="p-sign"> Der Auftrag liegt vom Kunden unterschrieben vor</label>
+    <div class="err" id="projErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn danger" type="button" id="projDel" hidden>Projekt löschen</button>
+      <span class="stamp" id="projStamp"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="projCancel">Abbrechen</button>
+      <button class="btn primary" type="submit" id="projSave">Anlegen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="leadDlg" aria-labelledby="leadDlgTitle">
+  <form id="leadForm" method="dialog" novalidate autocomplete="off">
+    <h4 id="leadDlgTitle">Neuer Lead</h4>
+    <div class="lstand" id="leadStand" hidden></div>
+    <div class="field">
+      <label for="l-kunde">Kunde</label>
+      <input type="text" id="l-kunde" maxlength="80" placeholder="z. B. Müller, Hauptstraße 4, Ort" autocomplete="off">
+    </div>
+    <div class="field">
+      <span class="lbl" id="lArtLbl">Interesse an</span>
+      <div class="cats arten" role="radiogroup" aria-labelledby="lArtLbl" id="l-arten"></div>
+    </div>
+    <div class="field">
+      <label for="l-eingang">Eingegangen am</label>
+      <input type="datetime-local" id="l-eingang">
+    </div>
+    <div class="field">
+      <label for="l-notiz">Notiz <span class="opt">(optional)</span></label>
+      <textarea id="l-notiz" maxlength="1000" autocomplete="off" placeholder="Telefon, Adresse, Wunsch …"></textarea>
+    </div>
+    <div class="field">
+      <span class="lbl" id="lBildLbl">Screenshot <span class="opt">(optional)</span></span>
+      <div class="lbild" id="l-bild" role="group" aria-labelledby="lBildLbl"></div>
+      <input type="file" id="l-datei" accept="image/*" class="sr" tabindex="-1" aria-hidden="true">
+    </div>
+    <div class="field" id="l-statusFeld" hidden>
+      <span class="lbl" id="lStatusLbl">Stand</span>
+      <div class="cats" role="radiogroup" aria-labelledby="lStatusLbl" id="l-status"></div>
+    </div>
+    <div class="err" id="leadErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn danger" type="button" id="leadDel" hidden>Lead löschen</button>
+      <span class="stamp" id="leadStamp"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="leadCancel">Abbrechen</button>
+      <button class="btn primary" type="submit" id="leadSave">Anlegen</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="toast" id="toast" hidden role="status" popover="manual"></div>
+
+<canvas id="bgfx" aria-hidden="true"></canvas>
+<canvas id="bg3d" aria-hidden="true"></canvas>
+</body>
+</html>
