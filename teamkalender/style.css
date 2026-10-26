@@ -26,6 +26,10 @@
   --cat-kunde: #1f56c2;
   --cat-buero: #8a8a94;
   --cat-abwesend: #7fa23a;
+  /* Begehung / technisches Aufmaß (Termine aus Leads): schwarz */
+  --cat-begehung: #111114;
+  --lead-storniert: #7c7c86;
+  --lead-verloren: #7a4a6b;
   --shadow: 0 1px 1px rgba(0,0,0,.04), 0 18px 40px -12px rgba(30,40,80,.28);
   --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
   --font-data: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
@@ -42,6 +46,8 @@
     --today: #d8282d; --holiday: #ffb340;
     --danger: #ff453a; --danger-soft: rgba(255,69,58,.2);
     --cat-baustelle: #ff7a3d; --cat-kunde: #5b8ef0; --cat-buero: #b7b6bc; --cat-abwesend: #a9c763;
+    /* Begehung ist schwarz; im Dunkeln wäre Schwarz unsichtbar, dort hell */
+    --cat-begehung: #f5f5f7; --lead-storniert: #a9a8b0; --lead-verloren: #c99abb;
     --shadow: 0 1px 1px rgba(0,0,0,.3), 0 18px 40px -12px rgba(0,0,0,.7);
     color-scheme: dark;
   }
@@ -56,6 +62,8 @@
   --today: #d8282d; --holiday: #ffb340;
   --danger: #ff453a; --danger-soft: rgba(255,69,58,.2);
   --cat-baustelle: #ff7a3d; --cat-kunde: #5b8ef0; --cat-buero: #b7b6bc; --cat-abwesend: #a9c763;
+  /* Begehung ist schwarz; im Dunkeln wäre Schwarz unsichtbar, dort hell */
+  --cat-begehung: #f5f5f7; --lead-storniert: #a9a8b0; --lead-verloren: #c99abb;
   --shadow: 0 1px 1px rgba(0,0,0,.3), 0 18px 40px -12px rgba(0,0,0,.7);
   color-scheme: dark;
 }
@@ -382,6 +390,11 @@ select.filter { border-radius: 999px; background: var(--surface); border-color: 
   border-radius: 12px; border-color: transparent; background: var(--surface-2); }
 .field input:focus, .field textarea:focus { border-color: var(--accent-ink); }
 .cats label { border-color: transparent; background: var(--surface-2); }
+/* Nur zu lesen (z. B. archivierter Lead): Felder ohne Füllung, nicht gewählte Auswahl blasser */
+.field :is(input[type="text"], input[type="date"], input[type="time"], input[type="datetime-local"], textarea):disabled { background: transparent; border-color: var(--line); color: var(--fg-2); -webkit-text-fill-color: var(--fg-2); opacity: 1; cursor: default; }
+.field :is(input[type="text"], textarea):disabled::placeholder { color: transparent; }
+.cats label:has(input:disabled) { cursor: default; }
+.cats label:has(input:disabled):not(:has(input:checked)) { opacity: .55; }
 .toast { border-radius: 999px; background: color-mix(in srgb, var(--fg) 82%, transparent);
   -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px); }
 .toggle input { accent-color: var(--cat-abwesend); }
@@ -815,21 +828,31 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .lrow:focus-visible { outline-offset: -3px; border-radius: 0; }
 .lrow .lt { grid-area: t; display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 15px; font-weight: 650; line-height: 1.3; }
 .lrow .ltn { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+/* Reicht der Platz nicht, rutschen die Kennzeichen unter den Namen, statt den Namen zu kürzen */
+.lrow:not(.nrow) .lt { flex-wrap: wrap; row-gap: 4px; }
 .lart { --c: var(--accent-ink); }
 .lbi { display: inline-flex; flex: none; color: var(--fg-3); }
 .lbi svg { width: 15px; height: 15px; }
 .lrow .lm { grid-area: m; display: flex; gap: 10px; min-width: 0; font-size: 12.5px; color: var(--fg-2); }
 .lrow .lm .num { flex: none; }
 .lrow .ln { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-3); }
-.lrow .lf {
+:is(.lrow, .kkarte) .lf {
   grid-area: f; justify-self: end; display: inline-flex; align-items: center; gap: 6px; min-width: 0;
   font-size: 13px; font-weight: 600; color: var(--fg-2); white-space: nowrap;
 }
-.lrow .lf svg { width: 15px; height: 15px; flex: none; }
-.lrow .lf.knapp { color: var(--holiday); }
-.lrow .lf.ueber { color: var(--today); }
-.lrow .lf.kont { color: var(--brand-leaf); font-weight: 560; }
-.lrow .lf.erl { color: var(--fg-3); font-weight: 500; }
+:is(.lrow, .kkarte) .lf svg { width: 15px; height: 15px; flex: none; }
+:is(.lrow, .kkarte) .lf.knapp { color: var(--holiday); }
+:is(.lrow, .kkarte) .lf.ueber { color: var(--today); }
+:is(.lrow, .kkarte) .lf.kont { color: var(--brand-leaf); font-weight: 560; }
+:is(.lrow, .kkarte) .lf.erl { color: var(--fg-3); font-weight: 500; }
+:is(.lrow, .kkarte) .lf.rekl { color: color-mix(in srgb, var(--today) 85%, var(--fg)); font-weight: 560; }
+/* Erledigt mit Termin: für wann, darunter von wem und wann festgelegt */
+:is(.lrow, .kkarte) .lf.term { color: var(--brand-leaf); }
+:is(.lrow, .kkarte) .lft { display: grid; min-width: 0; line-height: 1.3; }
+:is(.lrow, .kkarte) .lft > span { overflow: hidden; text-overflow: ellipsis; }
+:is(.lrow, .kkarte) .lfv { font-size: 12px; font-weight: 500; color: var(--fg-3); }
+.reklfield textarea { min-height: 56px; }
+.reklfield .hint { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
 .lrow > svg { grid-area: c; width: 16px; height: 16px; color: var(--fg-3); }
 /* Überfällig: roter Rand links, damit es auch ohne Farbe am Text auffällt */
 .lrow[data-status="neu"]:has(.lf.ueber) { box-shadow: inset 3px 0 0 var(--today); }
@@ -853,13 +876,19 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .lstand[data-s="ueber"] { --c: var(--today); }
 .lstand[data-s="kontaktiert"] { --c: var(--accent-ink); }
 .lstand[data-s="erledigt"] { --c: var(--brand-leaf); }
+.lstand[data-s="reklamiert"] { --c: var(--today); }
+.lstand[data-s="rueckfrage"] { --c: var(--cat-baustelle); }
+.lstand[data-s="meeting"] { --c: var(--accent-ink); }
+.lstand .sgrund { color: var(--fg); font-weight: 560; overflow-wrap: anywhere; }
+/* Mehrere Knöpfe (z. B. Termin eintragen und Reklamieren) nebeneinander, auf dem Handy in eigener Zeile */
+.lstand .lsb { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .lsi { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 50%; background: color-mix(in srgb, var(--c) 18%, transparent); color: color-mix(in srgb, var(--c) 80%, var(--fg)); }
 .lsi svg { width: 17px; height: 17px; }
 .lsx { display: grid; gap: 1px; min-width: 0; }
 .lsx strong { font-size: 14px; font-weight: 650; }
 .lsx span { font-size: 12.5px; color: var(--fg-2); }
 .lstand[data-s="ueber"] .lsx span { color: color-mix(in srgb, var(--today) 85%, var(--fg)); font-weight: 600; }
-@media (max-width: 480px) { .lstand { grid-template-columns: auto minmax(0, 1fr); } .lstand .btn { grid-column: 1 / -1; } }
+@media (max-width: 480px) { .lstand { grid-template-columns: auto minmax(0, 1fr); } .lstand > .btn, .lstand .lsb { grid-column: 1 / -1; } .lstand .lsb { justify-content: stretch; } .lstand .lsb .btn { flex: 1 1 auto; } }
 @media (pointer: coarse) { .lstand .btn, .lbild .btn.small { height: 44px; } }
 
 .lbild { display: grid; gap: 8px; min-width: 0; }
@@ -887,3 +916,152 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .lbacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .lbinfo { margin: 0; font-size: 12.5px; color: var(--fg-3); }
 .lbild[data-s="laedt"] .lbinfo { padding: 14px; border-radius: 14px; background: var(--surface-2); text-align: center; }
+
+/* ---------- Nacharbeiten ---------- */
+/* Rot: eine Woche nicht bearbeitet oder Wiedervorlage da. Roter Rand links und ein Hauch Rot, damit es auch ohne Farbe am Text auffällt */
+.nrow[data-rot] { box-shadow: inset 3px 0 0 var(--today); background: color-mix(in srgb, var(--today) 7%, transparent); }
+@media (hover: hover) and (pointer: fine) { .nrow[data-rot]:hover { background: color-mix(in srgb, var(--today) 11%, transparent); } }
+.nrow[data-rot]:active { background: color-mix(in srgb, var(--today) 14%, transparent); }
+.nrow .ln { color: var(--fg-2); }
+.lrow .lf.wartet { color: var(--cat-kunde); }
+#nachDlg { width: min(560px, calc(100vw - 32px)); }
+@media (max-width: 480px) { #nachDlg .actions .stamp:not(:empty) { flex-basis: 100%; order: -1; } }
+.lstand[data-s="wartet"] { --c: var(--cat-kunde); }
+/* Termin eintragen und Erledigt nebeneinander, schmal unter dem Text über die ganze Breite */
+.lsacts { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+@media (max-width: 480px) { .lstand .lsacts { grid-column: 1 / -1; } .lsacts .btn { flex: 1; } }
+.field textarea.nvermerk { min-height: 56px; }
+/* Verlauf: neueste Vermerke oben, lange Verläufe scrollen im Feld */
+.nverlauf {
+  /* Bezug für die versteckten Doppelpunkte (.sr): sonst verlängern sie das Fenster um den ganzen Verlauf */
+  position: relative;
+  list-style: none; margin: 0; padding: 0; max-height: 240px; overflow-y: auto; overscroll-behavior: contain;
+  border-radius: 14px; background: var(--surface-2);
+}
+.nverlauf li { display: grid; gap: 2px; padding: 9px 12px; }
+.nverlauf li + li { border-top: 1px solid var(--line); }
+.nvk { font-size: 11.5px; font-weight: 600; color: var(--fg-3); }
+.nvt { font-size: 13.5px; line-height: 1.4; color: var(--fg); overflow-wrap: anywhere; }
+/* Vier Reiter: auf dem Handy enger, damit alle in eine Zeile passen */
+@media (max-width: 640px) {
+  .top .tabs button { flex: 1 1 auto; min-width: 0; padding-inline: 6px; }
+}
+@media (max-width: 400px) {
+  .top .tabs button { font-size: 13px; padding-inline: 4px; }
+  .tabs .tcnt { margin-left: 3px; }
+}
+/* Titel bis zu zwei Zeilen, das Kennzeichen der Art bleibt oben daneben */
+.nrow .lt { align-items: flex-start; }
+.nrow .ltn { white-space: normal; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
+.nrow .lart { flex: none; margin-top: 1px; }
+/* Zuständig und Vorgangsnummer: Eingabefelder auf einer Linie, auch wenn eine Beschriftung umbricht */
+#nachDlg .row { align-items: end; }
+
+/* ---------- Durchgestrichene Termine ---------- */
+/* Bleiben sichtbar, aber blass und durchgestrichen; die Begründung steht in der Liste und oben im Termin */
+.chip.gestrichen, .blk.gestrichen { opacity: 0.55; }
+.chip.gestrichen .n, .blk.gestrichen .bt, .item.gestrichen .ti, .tt.gestrichen { text-decoration: line-through; text-decoration-thickness: 1.5px; }
+.item.gestrichen .ti, .item.gestrichen .time, .item.gestrichen .time b { color: var(--fg-3); }
+.item .gst { font-size: 12px; font-weight: 600; color: color-mix(in srgb, var(--today) 80%, var(--fg)); overflow-wrap: anywhere; }
+.dots i.g { opacity: 0.35; }
+#strikeInfo .sgrund { color: var(--fg); font-weight: 560; overflow-wrap: anywhere; }
+.strikefield textarea { min-height: 56px; }
+.strikefield .hint { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+.strikefield .linkbtn { display: inline; padding: 0; font-size: inherit; }
+/* Abbrechen und Speichern bleiben zusammen rechts, auch wenn Löschen und Durchstreichen auf dem Handy eine eigene Zeile brauchen */
+#dlg .actions .pair { display: flex; gap: 8px; margin-left: auto; }
+@media (max-width: 480px) { #dlg .actions .stamp:not(:empty) { flex-basis: 100%; order: -1; } }
+
+/* ---------- Leads: Leadquelle, storniert/verloren, Archiv ---------- */
+:is(.lrow, .kkarte) .lf.storn { color: color-mix(in srgb, var(--lead-storniert) 85%, var(--fg)); font-weight: 560; }
+:is(.lrow, .kkarte) .lf.verl { color: color-mix(in srgb, var(--lead-verloren) 85%, var(--fg)); font-weight: 560; }
+:is(.lrow, .kkarte) .lf.arch { color: var(--fg-3); font-weight: 500; }
+/* Leadquelle in der Zeile: kurz, ohne Rahmen, vor der Notiz */
+.lrow .lq { flex: none; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-2); }
+.lrow .lq::before { content: "·"; margin-right: 10px; color: var(--fg-3); }
+.lrow[data-status="storniert"] .ltn, .lrow[data-status="verloren"] .ltn, .lrow[data-archiv] .ltn { color: var(--fg-2); }
+.lstand[data-s="storniert"] { --c: var(--lead-storniert); }
+.lstand[data-s="verloren"] { --c: var(--lead-verloren); }
+.lstand[data-s="arch"] { --c: var(--fg-3); }
+#leadDlg .field .hint { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+/* Archivieren steht neben Löschen; auf dem Handy bekommen beide mit „Geändert …“ eine eigene Zeile */
+#leadArch svg { width: 15px; height: 15px; }
+
+/* Ansicht Liste/Kanban: auf dem Handy nur die Symbole, damit beide Umschalter in eine Zeile passen */
+#leadAnsicht button { display: inline-flex; align-items: center; gap: 6px; }
+#leadAnsicht svg { width: 15px; height: 15px; flex: none; }
+@media (max-width: 480px) {
+  #leadAnsicht button { padding-inline: 10px; }
+  #leadAnsicht .al { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  #leadSeg button { padding-inline: 10px; }
+}
+
+/* ---------- Kanban ---------- */
+/* Spalten als Glasbahnen nebeneinander; auf dem Handy wischt man von Spalte zu Spalte (rastet ein) */
+.kboard {
+  display: grid; grid-auto-flow: column; grid-auto-columns: min(82vw, 320px); gap: 10px; align-items: start;
+  overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: thin;
+  margin-inline: -16px; padding: 2px 16px 10px; scroll-padding-inline: 16px;
+}
+/* Am PC alle sechs Spalten nebeneinander, ohne Querscrollen */
+@media (min-width: 961px) {
+  .kboard { grid-auto-flow: row; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-columns: auto; gap: 8px; margin-inline: 0; padding-inline: 0; scroll-snap-type: none; }
+}
+.kspalte {
+  --c: var(--fg-3);
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; min-width: 0; padding: 10px; border-radius: 22px; scroll-snap-align: start;
+  background: color-mix(in srgb, var(--surface) 72%, transparent); border: 1px solid var(--glass-edge); box-shadow: var(--shadow);
+  -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
+  transition: box-shadow 140ms ease, background-color 140ms ease;
+}
+/* min-width: 0, damit ein langer Titel mit „…“ kürzt, statt die Spalte zu sprengen */
+.kspalte > h3 {
+  display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; padding: 4px 6px 2px;
+  font-size: 13px; font-weight: 650; letter-spacing: 0; color: var(--fg);
+}
+.kspalte > h3 i { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--c); }
+.kspalte > h3 > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kspalte > h3 .num {
+  margin-left: auto; min-width: 22px; height: 20px; padding-inline: 7px; border-radius: 999px; display: inline-grid; place-items: center;
+  font-size: 11.5px; font-weight: 650; color: var(--fg-2); background: var(--surface-2);
+}
+/* Beim Ziehen: die Spalte unter dem Zeiger zeigt, wohin der Lead kommt */
+.kspalte.ueber { background: color-mix(in srgb, var(--c) 14%, var(--surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 70%, transparent), var(--shadow); }
+.kkarten { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.kkarte {
+  position: relative; display: grid; gap: 6px; width: 100%; padding: 11px 12px; border-radius: 14px; text-align: left; cursor: pointer; color: var(--fg);
+  border: 1px solid var(--line); background: var(--solid); box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  transition: transform 160ms var(--ease-out), border-color 140ms ease, opacity 140ms ease;
+  -webkit-tap-highlight-color: transparent;
+}
+.kkarte[draggable="true"] { cursor: grab; }
+@media (hover: hover) and (pointer: fine) { .kkarte:hover { border-color: var(--line-strong); } }
+.kkarte:active { transform: scale(0.98); }
+.kkarte:focus-visible { outline-offset: 2px; }
+.kkarte.zieht { opacity: .45; }
+.kkarte[aria-busy="true"] { opacity: .6; cursor: progress; }
+/* Überfällig: roter Rand links wie in der Liste */
+.kkarte[data-status="neu"]:has(.lf.ueber) { box-shadow: inset 3px 0 0 var(--today), 0 1px 2px rgba(0,0,0,.06); }
+.kk1 { display: flex; align-items: flex-start; gap: 8px; min-width: 0; font-size: 14px; font-weight: 650; line-height: 1.3; }
+.kk1 .ltn { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
+.kk1 .lbi { margin-left: auto; margin-top: 1px; }
+.kk2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
+.kk2 .badge { display: inline-block; flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px; }
+.kk2 .lq { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-3); }
+.kgrund {
+  font-size: 12.5px; line-height: 1.35; color: var(--fg-2); overflow-wrap: anywhere;
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden;
+}
+/* In der Karte untereinander: der Bereich f aus der Liste gilt hier nicht (sonst entstünde eine zweite Spalte) */
+.kkarte .lf { grid-area: auto; justify-self: start; font-size: 12.5px; white-space: normal; }
+.kkarte .lf svg { width: 14px; height: 14px; }
+.kleer {
+  margin: 0; padding: 18px 10px; border-radius: 14px; border: 1.5px dashed var(--line); text-align: center;
+  font-size: 12.5px; color: var(--fg-3);
+}
+/* Am PC bis 1200 px etwas enger gepolstert (nach den Grundregeln, damit es greift) */
+@media (min-width: 961px) and (max-width: 1199px) {
+  .kspalte { padding: 8px; }
+  .kkarte { padding: 10px; }
+}
+@media (prefers-reduced-motion: reduce) { .kkarte, .kspalte { transition: none; } .kkarte:active { transform: none; } }

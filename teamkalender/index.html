@@ -15,13 +15,13 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=20261025">
-<script src="vendor/supabase.js?v=20261025" defer></script>
-<script src="config.js?v=20261025" defer></script>
-<script src="pdf.js?v=20261025" defer></script>
-<script src="app.js?v=20261025" defer></script>
-<script src="bg-szene.js?v=20261025" defer></script>
-<script src="bg.js?v=20261025" defer></script>
+<link rel="stylesheet" href="style.css?v=20261026">
+<script src="vendor/supabase.js?v=20261026" defer></script>
+<script src="config.js?v=20261026" defer></script>
+<script src="pdf.js?v=20261026" defer></script>
+<script src="app.js?v=20261026" defer></script>
+<script src="bg-szene.js?v=20261026" defer></script>
+<script src="bg.js?v=20261026" defer></script>
 </head>
 <body class="locked">
 <div class="login" id="login">
@@ -77,6 +77,7 @@
       <button type="button" role="tab" id="tab-kalender" data-tab="kalender" aria-selected="true" aria-controls="calView">Kalender</button>
       <button type="button" role="tab" id="tab-leads" data-tab="leads" aria-selected="false" aria-controls="leadView" tabindex="-1">Leads<span class="tcnt num" id="leadTabCnt" aria-hidden="true" hidden></span></button>
       <button type="button" role="tab" id="tab-projekte" data-tab="projekte" aria-selected="false" aria-controls="projView" tabindex="-1">Projekte</button>
+      <button type="button" role="tab" id="tab-nacharbeiten" data-tab="nacharbeiten" aria-selected="false" aria-controls="nachView" tabindex="-1">Nacharbeiten<span class="tcnt num ueber" id="nachTabCnt" aria-hidden="true" hidden></span></button>
     </div>
     <div class="acts">
     <span class="me" id="me"></span>
@@ -147,19 +148,40 @@
         <h2>Leads</h2>
         <span class="kw" id="leadCount"></span>
       </div>
+      <div class="seg" role="group" aria-label="Ansicht" id="leadAnsicht">
+        <button type="button" data-ansicht="liste" aria-pressed="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 4h8M5.5 8h8M5.5 12h8M2.5 4h.01M2.5 8h.01M2.5 12h.01"/></svg><span class="al">Liste</span></button>
+        <button type="button" data-ansicht="kanban" aria-pressed="false"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 2.5h3v11h-3zM6.5 2.5h3v7h-3zM10.5 2.5h3v9h-3z"/></svg><span class="al">Kanban</span></button>
+      </div>
       <div class="seg" role="group" aria-label="Stand" id="leadSeg">
         <button type="button" data-lst="offen" aria-pressed="true">Offen</button>
-        <button type="button" data-lst="erledigt" aria-pressed="false">Erledigt</button>
+        <button type="button" data-lst="abg" aria-pressed="false">Abgeschlossen</button>
+        <button type="button" data-lst="arc" aria-pressed="false">Archiv</button>
       </div>
     </div>
     <div class="plist" id="leadList"></div>
-    <p class="phint">Neue Leads innerhalb von 24 Stunden kontaktieren. Screenshots werden verkleinert und sind nur für das Team sichtbar.</p>
+    <p class="phint">Neue Leads innerhalb von 24 Stunden bearbeiten. Reklamieren, stornieren und „verloren“ gehen nur mit Begründung. Statt zu löschen wird archiviert; löschen dürfen nur Verwalter. Screenshots werden verkleinert und sind nur für das Team sichtbar.</p>
+  </section>
+
+  <section class="projview nachview" id="nachView" role="tabpanel" aria-labelledby="tab-nacharbeiten" hidden>
+    <div class="ptools">
+      <div class="period">
+        <h2>Nacharbeiten</h2>
+        <span class="kw" id="nachCount"></span>
+      </div>
+      <div class="seg" role="group" aria-label="Stand" id="nachSeg">
+        <button type="button" data-nst="offen" aria-pressed="true">Offen</button>
+        <button type="button" data-nst="erledigt" aria-pressed="false">Erledigt</button>
+      </div>
+    </div>
+    <div class="plist" id="nachList"></div>
+    <p class="phint">Nacharbeiten und Korrekturen. Rot wird, was eine Woche lang nicht bearbeitet wurde oder zur Wiedervorlage ansteht. Gespeichert wird nur Text.</p>
   </section>
 </div>
 
 <dialog id="dlg" aria-labelledby="dlgTitle">
   <form id="form" method="dialog" novalidate autocomplete="off">
     <h4 id="dlgTitle">Neuer Termin</h4>
+    <div class="lstand" id="strikeInfo" data-s="gestrichen" hidden></div>
     <div class="field">
       <label for="f-title">Titel</label>
       <input type="text" id="f-title" maxlength="120" placeholder="z. B. Zählerschrank Musterstraße 4" autocomplete="off">
@@ -204,13 +226,19 @@
       <label for="f-note">Notiz <span style="font-weight:400;color:var(--fg-3)">(optional)</span></label>
       <textarea id="f-note" maxlength="1000" autocomplete="off" placeholder="Adresse, Ansprechpartner, Material …"></textarea>
     </div>
+    <div class="field strikefield" id="strikeField" hidden>
+      <label for="f-strike">Warum wird der Termin durchgestrichen?</label>
+      <textarea id="f-strike" maxlength="300" autocomplete="off" placeholder="z. B. Kunde hat abgesagt, neuer Termin folgt"></textarea>
+      <p class="hint">Der Termin bleibt im Kalender stehen, durchgestrichen und mit dieser Begründung. <button class="linkbtn" type="button" id="strikeAbbr">Doch nicht durchstreichen</button></p>
+    </div>
     <div class="err" id="formErr" role="alert"></div>
     <div class="actions">
       <button class="btn danger" type="button" id="delBtn" hidden>Löschen</button>
+      <button class="btn" type="button" id="strikeBtn" hidden>Durchstreichen</button>
       <span class="stamp" id="stamp"></span>
       <span class="spacer"></span>
-      <button class="btn ghost" type="button" id="cancelBtn">Abbrechen</button>
-      <button class="btn primary" type="submit" id="saveBtn">Speichern</button>
+      <span class="pair"><button class="btn ghost" type="button" id="cancelBtn">Abbrechen</button>
+      <button class="btn primary" type="submit" id="saveBtn">Speichern</button></span>
     </div>
   </form>
 </dialog>
@@ -331,6 +359,12 @@
       <input type="text" id="l-kunde" maxlength="80" placeholder="z. B. Müller, Hauptstraße 4, Ort" autocomplete="off">
     </div>
     <div class="field">
+      <label for="l-quelle">Leadquelle</label>
+      <input type="text" id="l-quelle" maxlength="60" list="l-quellen" placeholder="z. B. Landingpage, Facebook/Instagram, Empfehlung" autocomplete="off">
+      <datalist id="l-quellen"></datalist>
+      <p class="hint" id="l-angelegt" hidden></p>
+    </div>
+    <div class="field">
       <span class="lbl" id="lArtLbl">Interesse an</span>
       <div class="cats arten" role="radiogroup" aria-labelledby="lArtLbl" id="l-arten"></div>
     </div>
@@ -351,13 +385,77 @@
       <span class="lbl" id="lStatusLbl">Stand</span>
       <div class="cats" role="radiogroup" aria-labelledby="lStatusLbl" id="l-status"></div>
     </div>
+    <div class="field reklfield" id="l-grundFeld" hidden>
+      <label for="l-grund" id="l-grundLbl">Warum wird der Lead reklamiert?</label>
+      <textarea id="l-grund" maxlength="500" autocomplete="off" placeholder="z. B. Telefonnummer falsch, Kunde hat keine Anfrage gestellt"></textarea>
+      <p class="hint">Pflichtfeld. Die Begründung steht im Lead und im Änderungsprotokoll.</p>
+    </div>
     <div class="err" id="leadErr" role="alert"></div>
     <div class="actions">
       <button class="btn danger" type="button" id="leadDel" hidden>Lead löschen</button>
+      <button class="btn ghost" type="button" id="leadArch" hidden>Archivieren</button>
       <span class="stamp" id="leadStamp"></span>
       <span class="spacer"></span>
       <button class="btn ghost" type="button" id="leadCancel">Abbrechen</button>
       <button class="btn primary" type="submit" id="leadSave">Anlegen</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="nachDlg" aria-labelledby="nachDlgTitle">
+  <form id="nachForm" method="dialog" novalidate autocomplete="off">
+    <h4 id="nachDlgTitle">Neue Nacharbeit</h4>
+    <div class="lstand" id="nachStand" hidden></div>
+    <div class="field">
+      <label for="n-titel">Was ist offen?</label>
+      <input type="text" id="n-titel" maxlength="120" placeholder="z. B. Zählerwechsel beim Netzbetreiber nachfragen" autocomplete="off">
+    </div>
+    <div class="field">
+      <label for="n-kunde">Kunde / Baustelle <span class="opt">(optional)</span></label>
+      <input type="text" id="n-kunde" maxlength="80" placeholder="z. B. Müller, Hauptstraße 4, Ort" autocomplete="off">
+    </div>
+    <div class="field">
+      <span class="lbl" id="nArtLbl">Art</span>
+      <div class="cats arten" role="radiogroup" aria-labelledby="nArtLbl" id="n-arten"></div>
+    </div>
+    <div class="row">
+      <div class="field">
+        <label for="n-wer">Zuständig <span class="opt">(optional)</span></label>
+        <input type="text" id="n-wer" maxlength="60" autocomplete="off" placeholder="Name" list="n-werListe">
+        <datalist id="n-werListe"></datalist>
+      </div>
+      <div class="field">
+        <label for="n-vorgang">Vorgangsnummer <span class="opt">(optional)</span></label>
+        <input type="text" id="n-vorgang" maxlength="60" autocomplete="off" placeholder="EVU, Ticket, RMA">
+      </div>
+    </div>
+    <div class="field">
+      <label for="n-wv">Wiedervorlage am <span class="opt">(optional, wird an dem Tag rot)</span></label>
+      <input type="date" id="n-wv" min="2020-01-01" max="2100-12-31">
+    </div>
+    <div class="field">
+      <label for="n-notiz">Beschreibung <span class="opt">(optional)</span></label>
+      <textarea id="n-notiz" maxlength="1000" autocomplete="off" placeholder="Was genau fehlt oder ist zu korrigieren?"></textarea>
+    </div>
+    <div class="field" id="n-statusFeld" hidden>
+      <span class="lbl" id="nStatusLbl">Stand</span>
+      <div class="cats" role="radiogroup" aria-labelledby="nStatusLbl" id="n-status"></div>
+    </div>
+    <div class="field" id="n-vermerkFeld" hidden>
+      <label for="n-vermerk">Neuer Vermerk <span class="opt">(optional, kommt mit Datum und Name in den Verlauf)</span></label>
+      <textarea id="n-vermerk" class="nvermerk" maxlength="500" autocomplete="off" placeholder="z. B. EVU angerufen, Rückruf bis Freitag zugesagt"></textarea>
+    </div>
+    <div class="field" id="n-verlaufFeld" hidden>
+      <span class="lbl" id="nVerlaufLbl">Verlauf</span>
+      <ol class="nverlauf" id="n-verlauf" aria-labelledby="nVerlaufLbl"></ol>
+    </div>
+    <div class="err" id="nachErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn danger" type="button" id="nachDel" hidden>Löschen</button>
+      <span class="stamp" id="nachStamp"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="nachCancel">Abbrechen</button>
+      <button class="btn primary" type="submit" id="nachSave">Anlegen</button>
     </div>
   </form>
 </dialog>

@@ -61,7 +61,8 @@
   const rgb = (hex) => [1, 3, 5].map((i) => (parseInt(hex.slice(i, i + 2), 16) / 255).toFixed(3)).join(" ");
   const NAVY = "#414d86", INK = "#1c1c1e", GREY = "#5d5d66", LINE = "#d8d8de", RED = "#ad0004";
 
-  /* doc: { title, sub: [Zeilen], warn, footer, days: [{ heading, rows: [{ time, title, meta, note, color }] }], empty } */
+  /* doc: { title, sub: [Zeilen], warn, footer, days: [{ heading, rows: [{ time, title, strike, meta, note, color }] }], empty }
+     strike: Text zu einem durchgestrichenen Termin (Titel grau und durchgestrichen, darunter dieser Text in Rot) */
   function build(doc) {
     const pages = [];
     let ops = null, y = 0;
@@ -90,18 +91,22 @@
       };
       const usable = A4[1] - M - BOTTOM - headH;
       for (const r of day.rows) {
-        const tl = wrap(r.title, "F2", 10.5, TW - 12), ml = wrap(r.meta, "F1", 8.5, TW), nl = r.note ? wrap(r.note, "F1", 9, TW) : [];
-        const h = tl.length * 13.5 + ml.length * 11 + nl.length * 11.5 + 9;
+        const tl = wrap(r.title, "F2", 10.5, TW - 12), sl = r.strike ? wrap(r.strike, "F2", 8.5, TW) : [], ml = wrap(r.meta, "F1", 8.5, TW), nl = r.note ? wrap(r.note, "F1", 9, TW) : [];
+        const h = tl.length * 13.5 + (sl.length + ml.length) * 11 + nl.length * 11.5 + 9;
         // Ein Termin bleibt zusammen, wenn er auf eine Seite passt; sonst läuft eine lange Notiz auf der nächsten Seite weiter
-        const need = h <= usable ? h : tl.length * 13.5 + ml.length * 11 + 3 * 11.5 + 9;
+        const need = h <= usable ? h : tl.length * 13.5 + (sl.length + ml.length) * 11 + 3 * 11.5 + 9;
         if (first ? !fits(need + headH) : !fits(need)) { newPage(); head(!first); }
         else if (first) head(false);
         first = false;
         let yy = y - 10.5;
-        text(M, yy, "F1", 9.5, INK, codes(r.time));
+        text(M, yy, "F1", 9.5, r.strike ? GREY : INK, codes(r.time));
         box(TX, yy + 0.5, 7, r.color);
-        tl.forEach((l, i) => text(TX + 12, yy - i * 13.5, "F2", 10.5, INK, l));
+        tl.forEach((l, i) => {
+          text(TX + 12, yy - i * 13.5, "F2", 10.5, r.strike ? GREY : INK, l);
+          if (r.strike && l.length) rule(TX + 12, TX + 12 + widthOf(l, "F2", 10.5), yy - i * 13.5 + 3.4, GREY, 0.9);
+        });
         yy -= (tl.length - 1) * 13.5 + 12.5;
+        sl.forEach((l) => { text(TX, yy, "F2", 8.5, RED, l); yy -= 11; });
         ml.forEach((l) => { text(TX, yy, "F1", 8.5, GREY, l); yy -= 11; });
         nl.forEach((l) => {
           if (yy - 11 < BOTTOM) {
