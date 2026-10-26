@@ -852,8 +852,10 @@
     const h = new Headers(o.headers); h.set("x-client-info", `${h.get("x-client-info") || "supabase-js"} kalender-seite/20261026`);
     return { ...o, headers: h };
   };
+  // Keine Antwort im Browser-Cache ablegen: Termine, Leads und Nacharbeiten lägen sonst nach dem Abmelden noch auf der
+  // Festplatte des Geräts (wie bei den Screenshots unten).
   const authFetch = (u, o) => {
-    o = mitKennung(u, o);
+    o = { ...mitKennung(u, o), cache: "no-store" };
     if (o && "kalSitz" in o) {
       const { kalSitz, ...rest } = o, wer = gespeichertVon(), fremd = !!myEmail && !!wer && wer !== myEmail;
       if (fremd) setTimeout(() => { if (!isLocked()) showLogin(FREMD); });
