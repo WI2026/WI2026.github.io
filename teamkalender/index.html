@@ -15,11 +15,11 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=20261026">
+<link rel="stylesheet" href="style.css?v=20261026c">
 <script src="vendor/supabase.js?v=20261026" defer></script>
 <script src="config.js?v=20261026" defer></script>
 <script src="pdf.js?v=20261026" defer></script>
-<script src="app.js?v=20261026b" defer></script>
+<script src="app.js?v=20261026c" defer></script>
 <script src="bg-szene.js?v=20261026" defer></script>
 <script src="bg.js?v=20261026" defer></script>
 </head>
@@ -195,6 +195,11 @@
       </div>
       <button class="progrow" type="button" id="progRow" hidden></button>
     </div>
+    <div class="field" id="leadField" hidden>
+      <label for="f-lead">Lead <span class="opt">(kontaktiert)</span></label>
+      <select id="f-lead"></select>
+      <p class="hint" id="leadFieldHint"></p>
+    </div>
     <div class="field">
       <span class="lbl" id="catLbl">Art</span>
       <div class="cats" role="radiogroup" aria-labelledby="catLbl" id="cats"></div>
@@ -231,6 +236,7 @@
       <textarea id="f-strike" maxlength="300" autocomplete="off" placeholder="z. B. Kunde hat abgesagt, neuer Termin folgt"></textarea>
       <p class="hint">Der Termin bleibt im Kalender stehen, durchgestrichen und mit dieser Begründung. <button class="linkbtn" type="button" id="strikeAbbr">Doch nicht durchstreichen</button></p>
     </div>
+    <div class="lstand" id="leadHinweis" data-s="kontaktiert" hidden></div>
     <div class="err" id="formErr" role="alert"></div>
     <div class="actions">
       <button class="btn danger" type="button" id="delBtn" hidden>Löschen</button>
@@ -354,6 +360,15 @@
   <form id="leadForm" method="dialog" novalidate autocomplete="off">
     <h4 id="leadDlgTitle">Neuer Lead</h4>
     <div class="lstand" id="leadStand" hidden></div>
+    <div class="field verknfeld" id="l-terminFeld" hidden>
+      <label for="l-termin">Welcher Termin im Kalender gehört zu diesem Lead?</label>
+      <div class="projpick">
+        <select id="l-termin"></select>
+        <button class="btn primary" type="button" id="lTerminOk">Verknüpfen</button>
+      </div>
+      <p class="hint" id="l-terminKurz" hidden></p>
+      <p class="hint">Der Lead steht danach auf „Termin festgelegt“, der Termin wird zur Begehung. <button class="linkbtn" type="button" id="lTerminAbbr">Doch nicht</button></p>
+    </div>
     <div class="field">
       <label for="l-kunde">Kunde</label>
       <input type="text" id="l-kunde" maxlength="80" placeholder="z. B. Müller, Hauptstraße 4, Ort" autocomplete="off">

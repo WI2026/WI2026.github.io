@@ -984,6 +984,9 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .lstand[data-s="verloren"] { --c: var(--lead-verloren); }
 .lstand[data-s="arch"] { --c: var(--fg-3); }
 #leadDlg .field .hint { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+/* Begehung nur mit Lead: Auswahl im Termin, vorhandenen Termin im Lead verknüpfen */
+#dlg .field .hint { margin: 2px 0 0; font-size: 12.5px; color: var(--fg-3); }
+.verknfeld .linkbtn { display: inline; padding: 0; font-size: inherit; }
 /* Archivieren steht neben Löschen; auf dem Handy bekommen beide mit „Geändert …“ eine eigene Zeile */
 #leadArch svg { width: 15px; height: 15px; }
 

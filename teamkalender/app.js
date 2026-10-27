@@ -528,6 +528,7 @@
     $("projNewBtn").hidden = ro;
     const cat = e && CATS.some(c => c.id === e.cat) ? e.cat : "baustelle";
     $(`cat-${cat}`).checked = true;
+    catAtOpen = e ? e.cat : ""; leadHinweisWeg = false; leadDran = null; leadGewaehlt = ""; vorbelegt = null; zeigLeadHinweis(null); fill($("f-lead"));
     $("formErr").textContent = "";
     $("delBtn").hidden = !e || ro; $("delBtn").disabled = false;
     disarmDelete();
@@ -535,6 +536,7 @@
     $("saveBtn").hidden = ro; $("saveBtn").disabled = false;
     $("cancelBtn").textContent = ro ? "Schließen" : "Abbrechen";
     dlg.querySelectorAll("input, textarea, select").forEach(n => { n.disabled = ro; });
+    syncLeadField();
     $("stamp").textContent = e && e.updatedAt ? `Geändert ${fmtStamp(e.updatedAt)}` : "";
     syncAllDay();
     $("f-title").autofocus = !ro && !e;
@@ -603,19 +605,30 @@
     $("saveBtn").textContent = "Speichern";
   }
   $("strikeBtn").addEventListener("click", () => {
-    strikeMode = "streichen"; $("formErr").textContent = "";
+    // Ein abgesagter Termin bekommt keinen Lead: eine Auswahl fällt weg
+    strikeMode = "streichen"; $("formErr").textContent = ""; leadGewaehlt = ""; vorbelegungWeg(); syncLeadField();
     $("strikeBtn").hidden = true; $("strikeField").hidden = false; $("saveBtn").textContent = "Durchstreichen";
     $("f-strike").focus();
   });
   $("strikeAbbr").addEventListener("click", () => {
-    strikeMode = null; $("formErr").textContent = "";
+    strikeMode = null; $("formErr").textContent = ""; syncLeadField();
     $("strikeField").hidden = true; $("f-strike").value = ""; $("strikeBtn").hidden = false; $("saveBtn").textContent = "Speichern";
     $("strikeBtn").focus();
   });
-  // Wieder gültig: gleich speichern (mit allem, was im Fenster sonst geändert wurde)
+  // Wieder gültig: gleich speichern (mit allem, was im Fenster sonst geändert wurde).
+  // Wird der Termin dabei erst zur Begehung (Art hier gewählt), gehört ein Lead dazu: dann zeigt das Fenster die Auswahl und
+  // „Wieder gültig“ bleibt vorgemerkt, bis mit Lead gespeichert wird (oder das Fenster schließt).
   function wiederGueltig() {
     if ($("saveBtn").disabled || !editingId) return;
-    strikeMode = "aufheben"; $("form").requestSubmit();
+    strikeMode = "aufheben"; syncLeadField(); $("form").requestSubmit();
+  }
+  // „Wieder gültig“ gilt nur für den einen Versuch (danach speichert „Speichern“ den Termin weiter durchgestrichen). Gehört ein Lead
+  // dazu (gewählt oder noch zu wählen), bleibt es vorgemerkt, bis mit ihm gespeichert ist: die Auswahl gibt es nur mit „Wieder gültig“.
+  function aufhebenEnde(bleibt) {
+    if (bleibt) { strikeMode = "aufheben"; $("saveBtn").textContent = "Wieder gültig"; return; }
+    strikeMode = null; $("saveBtn").textContent = "Speichern";
+    if (leadGewaehlt) { leadGewaehlt = ""; vorbelegungWeg(); }
+    syncLeadField();
   }
   // Kundendaten nur so lange im Formular halten, wie es offen ist.
   // Auch beim Abmelden aufgerufen, ob das Fenster offen ist oder nicht (eine späte Antwort könnte es sonst wieder gefüllt haben)
@@ -625,8 +638,142 @@
   // Termin aus einem Lead („Termin eintragen“): nach dem Speichern gilt der Lead als erledigt (nur für dieses Öffnen).
   // Aus einer Nacharbeit: nach dem Speichern steht der Termin als Vermerk in deren Verlauf.
   let terminLead = null, terminNach = null;
+  // Querverbindung Termin ↔ Lead. Im Termin steht unter „Projekt“ die Auswahl „Lead“ mit den Leads, bei denen „Kontakt erreicht“
+  // gesetzt ist (Kontaktiert, Rückfragen, Online-Meeting). Wer einen wählt, macht den Termin zur Begehung; beim Speichern steht der
+  // Lead wie mit „Termin eintragen“ auf „Termin festgelegt“ (die Datenbank trägt Tag, Uhrzeit, wer und wann ein).
+  // Begehung / Aufmaß gehört immer zu einem Lead: Wer die Art im Kalender selbst wählt (neuer Termin, oder ein Termin bekommt
+  // diese Art), muss den Lead wählen. Aus einem Lead heraus steht er schon fest. Bestehende Begehungen bleiben, wie sie sind.
+  // catAtOpen: Art beim Öffnen ("" bei neuem Termin). leadHinweisWeg: „Ohne Lead speichern“ gewählt (nur für dieses Öffnen).
+  // leadDran: bei einem bestehenden Termin fragt die Seite beim Öffnen einmal nach, ob schon ein Lead auf ihn zeigt (dann steht
+  // der Lead da und es ist keine Wahl nötig): null = unbekannt, "laeuft", "fehler", false (keiner) oder der Lead (id, kunde, art, status).
+  // leadGewaehlt: der Lead, den man hier gewählt hat (fällt er aus der Auswahl, weil ihn jemand anders entschieden hat, sagt es das
+  // Speichern, statt still ohne ihn zu speichern). vorbelegt: was die Seite aus dem gewählten Lead in leere Felder geschrieben hat.
+  let catAtOpen = "", leadHinweisWeg = false, leadDran = null, leadDranP = null, leadGewaehlt = "", vorbelegt = null;
+  const leadWaehlbar = (l) => !l.archiviert && LGESPRAECH.includes(l.status);
+  // Im Lead „Vorhandener Termin“: ein kontaktierter Lead, oder einer, der ohne Termin auf „Erledigt“ gesetzt wurde (z. B. von Hand,
+  // während der Termin schon im Kalender stand)
+  const leadVerknuepfbar = (l) => !l.archiviert && (LGESPRAECH.includes(l.status) || (l.status === "erledigt" && !l.termin_id));
+  const leadTitel = (l) => `${l.status === "meeting" ? "Online-Meeting: " : ""}${l.kunde} · ${leadArtLabel(l.art)}`.slice(0, 120);
+  const leadZeile = (l) => `${kurz(l.kunde, 60)} · ${leadArtLabel(l.art)} · ${LSTAND[l.status] || l.status}`;
+  const gewaehlteArt = () => (dlg.querySelector('input[name="cat"]:checked') || {}).value || "baustelle";
+  const leadDranL = () => leadDran && typeof leadDran === "object" ? leadDran : null;
+  // Durchgestrichene Termine (oder gerade beim Durchstreichen) bekommen keinen Lead: ein abgesagter Termin erledigt keinen Lead.
+  // Zur Begehung werden sie deshalb auch nicht (sonst entstünde über Durchstreichen und „Wieder gültig“ eine Begehung ohne Lead).
+  const terminGestrichen = () => strikeMode === "streichen" || !!(editingId && state.events.get(editingId)?.gestrichen && strikeMode !== "aufheben");
+  // Muss hier ein Lead gewählt werden?
+  const leadPflicht = () => state.canWrite && gewaehlteArt() === "begehung" && !terminLead && catAtOpen !== "begehung" && !(editingId && leadDranL());
+  // Ist die Auswahl gerade zum Wählen offen (nicht aus dem Lead fest, nicht „wird geprüft“, kein Lead dran)?
+  const leadWahlOffen = () => !$("leadField").hidden && !$("f-lead").disabled;
+  async function leadDranPruefen() {
+    const g = dlgGen, sg = sitzGen, id = editingId;
+    leadDran = "laeuft";
+    let r = "fehler";
+    try { const v = await sb.from(LT).select("id,kunde,art,status").eq("termin_id", id).limit(1); check(v); r = v.data[0] || false; }
+    catch (e) { if (projFail(e, sg)) return; }
+    if (g !== dlgGen || !dlg.open || editingId !== id || !gleicheSitzung(sg)) return;
+    leadDran = r; syncLeadField();
+  }
+  function syncLeadField() {
+    const f = $("leadField"), sel = $("f-lead"), hint = $("leadFieldHint");
+    // Bestehender Termin: einmal nachsehen, ob schon ein Lead auf ihn zeigt (auch wenn er durchgestrichen ist, für „Wieder gültig“)
+    if (state.canWrite && editingId && leadDran === null) leadDranP = leadDranPruefen();
+    f.hidden = !state.canWrite || (!terminLead && terminGestrichen());
+    // Ausgeblendet: keine Kundennamen stehen lassen (die eigene Wahl bleibt in leadGewaehlt)
+    if (f.hidden) { fill(sel); hint.textContent = ""; return; }
+    // Aus „Termin eintragen“: der Lead steht fest (auch wenn ihn inzwischen jemand anders entschieden hat; dann bleibt er, wie er ist)
+    if (terminLead) {
+      const fest = state.leads.get(terminLead.id), frei = fest && !fest.archiviert && terminLead.frei.includes(fest.status);
+      fill(sel, el("option", { value: terminLead.id }, fest ? leadZeile(fest) : "Lead nicht mehr offen")); sel.disabled = true;
+      hint.textContent = frei ? "Beim Speichern steht der Lead auf „Termin festgelegt“."
+        : "Den Lead hat inzwischen jemand anders entschieden. Der Termin wird gespeichert, der Lead bleibt, wie er ist.";
+      return;
+    }
+    if (editingId && leadDran !== false) {
+      const dran = leadDranL();
+      fill(sel, el("option", { value: "" }, !dran ? (leadDran === "fehler" ? "Nicht geprüft" : "Wird geprüft …")
+        : dran.status === "erledigt" ? `${kurz(dran.kunde, 60)} · ${leadArtLabel(dran.art)} · Termin festgelegt` : leadZeile(dran))); sel.disabled = true;
+      hint.textContent = dran ? "Der Termin gehört zu diesem Lead."
+        : leadDran === "fehler" ? "Ob der Termin schon zu einem Lead gehört, ließ sich nicht prüfen. Beim Speichern prüft die Seite noch einmal."
+        : "Die Seite prüft, ob der Termin schon zu einem Lead gehört.";
+      return;
+    }
+    const list = [...state.leads.values()].filter(leadWaehlbar).sort((a, b) => a.kunde.localeCompare(b.kunde, "de"));
+    fill(sel, el("option", { value: "" }, !state.leadsLoaded ? "Leads werden geladen …" : !list.length ? "Kein kontaktierter Lead" : leadPflicht() ? "Bitte Lead wählen" : "Kein Lead"),
+      ...list.map(l => el("option", { value: l.id }, leadZeile(l))));
+    sel.disabled = false;
+    sel.value = list.some(l => l.id === leadGewaehlt) ? leadGewaehlt : "";
+    hint.textContent = leadGewaehlt && state.leadsLoaded && !sel.value ? leadWegText()
+      : state.leadsLoaded && !list.length
+      ? (leadPflicht() ? "Begehungen gehören immer zu einem Lead, und gerade hat kein Lead „Kontakt erreicht“. Bitte eine andere Art wählen oder zuerst den Lead kontaktieren."
+        : "Hier stehen die Leads mit „Kontakt erreicht“. Gerade gibt es keinen.")
+      : leadPflicht() ? "Begehungen gehören immer zu einem Lead. Beim Speichern steht der Lead auf „Termin festgelegt“."
+      : "Leads mit „Kontakt erreicht“. Mit Lead wird der Termin eine Begehung, und der Lead steht beim Speichern auf „Termin festgelegt“.";
+  }
+  // Der gewählte Lead steht nicht mehr zur Wahl (jemand anders hat ihn inzwischen entschieden, archiviert oder gelöscht)
+  function leadWegText() {
+    const l = state.leads.get(leadGewaehlt);
+    return `${l ? `„${kurz(l.kunde, 60)}“` : "Der gewählte Lead"} hat inzwischen einen anderen Stand und steht nicht mehr zur Wahl. Bitte neu wählen.`;
+  }
+  $("cats").addEventListener("change", () => {
+    if (leadDran === "fehler") leadDran = null;
+    zeigLeadHinweis(null);
+    // Termine zu Leads sind Begehungen: eine andere Art gewählt, dann ohne Lead
+    if (gewaehlteArt() !== "begehung" && leadGewaehlt) { leadGewaehlt = ""; vorbelegungWeg(); }
+    syncLeadField();
+  });
+  // Titel und Notiz, die die Seite aus einem Lead vorbelegt hat und die seither unverändert sind, wieder leeren
+  // (Lead gewechselt, „Kein Lead“ oder andere Art: sonst stünden Name und Notiz des falschen Kunden im Termin)
+  function vorbelegungWeg() {
+    if (!vorbelegt) return;
+    if (vorbelegt.titel != null && $("f-title").value === vorbelegt.titel) $("f-title").value = "";
+    if (vorbelegt.notiz != null && $("f-note").value === vorbelegt.notiz) $("f-note").value = "";
+    vorbelegt = null;
+  }
+  $("f-lead").addEventListener("change", () => {
+    const l = state.leads.get($("f-lead").value);
+    $("formErr").textContent = "";
+    vorbelegungWeg();
+    leadGewaehlt = l ? l.id : "";
+    if (!l) { syncLeadField(); return; }
+    $("cat-begehung").checked = true; zeigLeadHinweis(null); syncLeadField();
+    // Wie „Termin eintragen“: ohne eigenen Titel Name und Interesse, ohne Notiz die des Leads (gemerkt, wie das Feld es zurückgibt)
+    vorbelegt = {};
+    if (!$("f-title").value.trim()) { $("f-title").value = leadTitel(l); vorbelegt.titel = $("f-title").value; }
+    if (!$("f-note").value.trim() && l.notiz) { $("f-note").value = l.notiz.slice(0, 1000); vorbelegt.notiz = $("f-note").value; }
+  });
+  // Nennt der Titel eines neuen Termins einen kontaktierten Lead ohne Termin? Ein Wort des Namens mit mindestens 4 Zeichen genügt: der Teil des
+  // Kundenfelds vor dem ersten Komma („Müller, Hauptstraße 4, Ort“), ohne Anrede und allgemeine Wörter. Der Hinweis nennt den Lead
+  // und lässt sich mit „Ohne Lead speichern“ übergehen.
+  const NAMENSFUELLER = new Set(["herr", "frau", "familie", "firma", "gmbh", "kunde", "anfrage", "termin", "begehung", "aufmaß", "online", "meeting"]);
+  const woerter = (x) => String(x || "").toLocaleLowerCase("de").split(/[^\p{L}\p{N}]+/u).filter(w => w.length >= 4 && !NAMENSFUELLER.has(w));
+  const nameWoerter = (kunde) => woerter(String(kunde || "").split(",")[0]);
+  function leadZumTitel(titel) {
+    const t = new Set(woerter(titel));
+    return t.size ? [...state.leads.values()].filter(leadWaehlbar).find(l => nameWoerter(l.kunde).some(w => t.has(w))) || null : null;
+  }
+  function zeigLeadHinweis(l) {
+    const box = $("leadHinweis");
+    if (!l) { box.hidden = true; fill(box); return; }
+    fill(box,
+      el("span", { class: "lsi", "aria-hidden": "true" }, svgKal()),
+      el("span", { class: "lsx" }, el("strong", null, "Gehört der Termin zu einem Lead?"),
+        el("span", null, `„${kurz(l.kunde, 60)}“ (${leadArtLabel(l.art)}) ist kontaktiert und hat noch keinen Termin. Termine zu Leads als Begehung mit dem Lead speichern, dann steht der Lead auf „Termin festgelegt“.`)),
+      el("span", { class: "lsb" },
+        el("button", { class: "btn small primary", type: "button", id: "leadHinweisJa", onclick: () => {
+          if (!state.leads.has(l.id)) { zeigLeadHinweis(null); return; }
+          leadGewaehlt = leadWaehlbar(state.leads.get(l.id)) ? l.id : "";
+          $("cat-begehung").checked = true; zeigLeadHinweis(null); syncLeadField(); $("saveBtn").focus();
+        } }, "Als Begehung zum Lead"),
+        el("button", { class: "btn small", type: "button", id: "leadHinweisNein", onclick: () => {
+          leadHinweisWeg = true; zeigLeadHinweis(null); $("form").requestSubmit();
+        } }, "Ohne Lead speichern")));
+    box.hidden = false;
+    $("leadHinweisJa").focus();
+  }
+  $("f-title").addEventListener("input", () => { if (!$("leadHinweis").hidden) zeigLeadHinweis(null); });
   function wipeTermin() {
     $("form").reset(); $("stamp").textContent = ""; $("formErr").textContent = ""; editingId = editingStamp = null; terminLead = terminNach = null;
+    catAtOpen = ""; leadHinweisWeg = false; leadDran = null; leadGewaehlt = ""; vorbelegt = null; zeigLeadHinweis(null); fill($("f-lead")); $("leadFieldHint").textContent = ""; $("leadField").hidden = true;
     zeigStrike(null, true);
     $("f-projekt").replaceChildren(el("option", { value: "" }, "Kein Projekt")); $("progRow").replaceChildren(); $("progRow").removeAttribute("aria-label"); $("progRow").hidden = true;
   }
@@ -667,18 +814,57 @@
   $("form").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     if (!state.canWrite || !state.col) return;
+    // Bestehender Termin: ob schon ein Lead auf ihn zeigt, muss feststehen. Mit gewähltem Lead direkt vor dem Speichern noch einmal
+    // nachsehen (inzwischen könnte jemand anders einen Lead mit ihm verknüpft haben). Läuft die Prüfung, die Antwort abwarten.
+    if (editingId && (leadDran === null || leadDran === "fehler" || (leadDran === false && leadGewaehlt))) { leadDran = null; leadDranP = leadDranPruefen(); }
+    if (leadDran === "laeuft" && leadDranP) {
+      // Löschen derweil gesperrt (sonst meldete die späte Antwort einen gelöschten Termin als nicht gespeichert)
+      const g0 = dlgGen, sg0 = sitzGen, id0 = editingId, titel0 = $("f-title").value.trim() || "Termin"; $("saveBtn").disabled = true; $("delBtn").disabled = true;
+      await leadDranP;
+      if (g0 !== dlgGen || !dlg.open) {
+        // Fenster während der Prüfung geschlossen (das Formular ist dann geleert): sagen, dass nichts gespeichert wurde
+        if (gleicheSitzung(sg0) && liveZuGen !== g0 && state.events.has(id0)) toast(nichtText(titel0, "gespeichert", "Das Fenster wurde geschlossen, bevor die Prüfung fertig war. Bitte noch einmal öffnen und speichern."), 7000);
+        return;
+      }
+      $("saveBtn").disabled = false; $("delBtn").disabled = false;
+    }
     const title = $("f-title").value.trim(), date = $("f-date").value, allDay = $("f-allday").checked;
     const start = $("f-start").value, end = $("f-end").value, person = $("f-person").value.trim(), note = $("f-note").value.trim();
-    const cat = (dlg.querySelector('input[name="cat"]:checked') || {}).value || "baustelle";
+    // Lead im Termin gewählt: Begehung zu diesem Lead (Pflicht, wenn die Art Begehung hier selbst gewählt wurde)
+    const pflicht = leadPflicht(), wahl = leadWahlOffen() && leadGewaehlt ? state.leads.get(leadGewaehlt) || null : null;
+    const gueltig = !!wahl && leadWaehlbar(wahl), cat = wahl ? "begehung" : gewaehlteArt();
     // Begründung in einer Zeile, wie die Datenbank sie speichert (dort mindestens 3, höchstens 300 Zeichen)
     const modus = editingId ? strikeMode : null, grund = $("f-strike").value.replace(/[\s\x00-\x1f\x7f-\x9f]+/g, " ").trim();
-    if (modus === "aufheben") strikeMode = null;
+    const dran = leadDranL();
+    // Fehler rund um den Lead (gewählter fällt weg: jemand anders hat ihn entschieden oder einen Lead mit dem Termin verknüpft)
+    const leadFehler = pflicht && terminGestrichen() ? (modus === "streichen"
+        ? "Ein abgesagter Termin wird keine Begehung, denn Begehungen gehören immer zu einem Lead. Bitte vor dem Durchstreichen eine andere Art wählen."
+        : "Ein durchgestrichener Termin wird keine Begehung, denn Begehungen gehören immer zu einem Lead. Bitte eine andere Art wählen oder zuerst „Wieder gültig“ tippen.")
+      : leadGewaehlt && dran ? `Der Termin gehört inzwischen zu „${kurz(dran.kunde, 60)}“ (jemand anders hat ihn verknüpft). Bitte prüfen; der gewählte Lead bleibt offen.`
+      : editingId && (pflicht || leadGewaehlt) && leadDran !== false && !dran ? (leadDran === "fehler" ? "Ob der Termin schon zu einem Lead gehört, ließ sich nicht prüfen. Prüfe die Verbindung und speichere noch einmal."
+        : "Einen Moment: Die Seite prüft noch, ob der Termin schon zu einem Lead gehört. Bitte gleich noch einmal speichern.")
+      : leadGewaehlt && !gueltig && state.leadsLoaded ? leadWegText()
+      : pflicht && !gueltig ? (!state.leadsLoaded ? "Die Leads werden noch geladen. Bitte kurz warten und erneut speichern."
+        : [...state.leads.values()].some(leadWaehlbar) ? "Bitte den Lead wählen, zu dem die Begehung gehört."
+        : "Begehungen gehören immer zu einem Lead, und gerade hat kein Lead „Kontakt erreicht“. Bitte eine andere Art wählen oder zuerst den Lead kontaktieren.")
+      : "";
     const err = !title ? "Bitte einen Titel eintragen." : !/^\d{4}-\d{2}-\d{2}$/.test(date) ? "Bitte ein Datum wählen."
       : !allDay && (!start || !end) ? "Bitte Uhrzeit von und bis angeben."
       : !allDay && toMin(end) <= toMin(start) ? "Die Endzeit muss nach der Startzeit liegen."
+      : leadFehler ? leadFehler
       : !person ? "Bitte deinen Namen eintragen, damit alle sehen, wer den Termin angelegt hat."
       : modus === "streichen" && [...grund].length < 3 ? "Bitte kurz begründen, warum der Termin durchgestrichen wird (mindestens 3 Zeichen)." : "";
-    if (err) { $("formErr").textContent = err; if (modus === "streichen" && [...grund].length < 3 && title) $("f-strike").focus(); return; }
+    if (modus === "aufheben" && err) aufhebenEnde(err === leadFehler || !!leadGewaehlt || pflicht);
+    if (err) {
+      // Der gewählte Lead ist weg: Auswahl und was die Seite aus ihm vorbelegt hat zurücknehmen (ein zweites Speichern geht ohne ihn)
+      if (err === leadFehler && leadGewaehlt && !gueltig && state.leadsLoaded && !/prüft noch|nicht prüfen/.test(err)) { leadGewaehlt = ""; vorbelegungWeg(); syncLeadField(); }
+      $("formErr").textContent = err;
+      if (modus === "streichen" && [...grund].length < 3 && title) $("f-strike").focus(); else if (/Lead wählen|neu wählen/.test(err) && leadWahlOffen()) $("f-lead").focus();
+      return;
+    }
+    // Neuer Baustellen- oder Kundentermin, dessen Titel einen offenen Lead nennt: erst fragen (einmal je Öffnen)
+    const passt = !editingId && (cat === "kunde" || cat === "baustelle") && !terminLead && !terminNach && !leadHinweisWeg ? leadZumTitel(title) : null;
+    if (passt) { $("formErr").textContent = ""; zeigLeadHinweis(passt); return; }
     store.set("kal.name", person);
     const now = new Date().toISOString();
     const prev = editingId ? state.events.get(editingId) : null;
@@ -689,14 +875,34 @@
     if (modus === "streichen") body.gestrichen = grund; else if (modus === "aufheben") body.gestrichen = null;
     const getan = !prev ? "eingetragen" : modus === "streichen" ? "durchgestrichen" : modus === "aufheben" ? "wieder gültig" : "gespeichert";
     // Vor dem Warten merken, welches Öffnen das war: eine späte Antwort schließt keinen inzwischen geöffneten anderen Termin
-    const g = dlgGen, sg = sitzGen, id = editingId, hier = () => g === dlgGen && dlg.open && gleicheSitzung(sg);
+    // (auch Kennung und Stand: wird das Fenster während des Lesens unten geschlossen oder neu geöffnet, gilt das Speichern trotzdem diesem Termin)
+    const g = dlgGen, sg = sitzGen, id = editingId, stamp0 = editingStamp, hier = () => g === dlgGen && dlg.open && gleicheSitzung(sg);
     // Termin aus einem Lead: auch merken, falls das Fenster während des Speicherns geschlossen wird
-    const ausLead = !editingId && terminLead ? terminLead : null, ausNach = !editingId && terminNach ? terminNach : null;
+    const ausLead = wahl ? { id: wahl.id, frei: leadFrei(wahl) } : !editingId && terminLead ? terminLead : null, ausNach = !editingId && terminNach ? terminNach : null;
     $("saveBtn").disabled = true; $("delBtn").disabled = true;
     try {
+      // Gewählter Lead: direkt vor dem Speichern frisch nachsehen, ob er noch zur Wahl steht (die Live-Meldung kann fehlen oder spät
+      // kommen; sonst entstünde eine Begehung ohne Lead). Lässt er sich nicht lesen, wird gespeichert; was dann ist, meldet leadNachTermin.
+      // Schließt das Fenster derweil, geht es weiter wie beim Speichern selbst (gemeldet wird dann mit kurzer Meldung).
+      if (wahl) {
+        let frisch;
+        try { const r = await sb.from(LT).select(LCOLS).eq("id", wahl.id).maybeSingle(); check(r); frisch = r.data; }
+        catch (e) { if (projFail(e, sg)) return; }
+        if (!gleicheSitzung(sg)) return;
+        if (frisch !== undefined && (!frisch || !leadWaehlbar(frisch))) {
+          if (frisch) { putLead(frisch); afterLeads(); } else leadsBald();
+          if (hier()) {
+            $("formErr").textContent = leadWegText(); leadGewaehlt = ""; vorbelegungWeg(); syncLeadField();
+            if (modus === "aufheben") aufhebenEnde(true);
+            if (leadWahlOffen()) $("f-lead").focus();
+          } else toast(nichtText(title, prev ? "gespeichert" : "eingetragen", `Der Lead „${kurz(wahl.kunde, 40)}“ steht inzwischen nicht mehr zur Wahl.`), 7000);
+          return;
+        }
+        if (frisch) ausLead.frei = leadFrei(frisch);
+      }
       let neueId = null;
-      if (editingId) await state.col.doc(editingId).set(body, editingStamp); else neueId = await state.col.add(body);
-      if (ausLead && gleicheSitzung(sg)) { if (hier()) terminLead = null; leadNachTermin(ausLead.id, sg, neueId, ausLead.frei); }
+      if (id) await state.col.doc(id).set(body, stamp0); else neueId = await state.col.add(body);
+      if (ausLead && gleicheSitzung(sg)) { if (hier()) terminLead = null; leadNachTermin(ausLead.id, sg, neueId || id, ausLead.frei); }
       if (ausNach && gleicheSitzung(sg)) { if (hier()) terminNach = null; nachNachTermin(ausNach, body, sg); }
       if (!hier()) {
         // Fenster inzwischen zu oder ein anderer Termin offen: nur melden, die Ansicht nicht verschieben
@@ -721,6 +927,7 @@
         return;
       }
       const m = writeError(e2, h, sg);
+      if (h && modus === "aufheben") aufhebenEnde(!!wahl);
       if (h) $("formErr").textContent = m; else if (m && gleicheSitzung(sg)) toast(nichtText(title, prev ? (modus === "streichen" ? "durchgestrichen" : "gespeichert") : "eingetragen", m), 7000);
     } finally { if (g === dlgGen) { $("saveBtn").disabled = false; $("delBtn").disabled = false; } }
   });
@@ -1942,6 +2149,7 @@
     else if (leadDlg.open) { const l = lEdit && state.leads.get(lEdit); if (l) { if (l.status !== lStatusAuf) lStandBasis(l.status); lGrundBasis(l); lModus(); } renderLeadStand(); }
     leadBadge();
     if (state.tab === "leads") renderLeads();
+    if (dlg.open) syncLeadField();
   }
   // Mehrere Anlässe kurz hintereinander (Beitritt, Abo-Meldung, Netz zurück): nur einmal laden
   function leadsBald() { clearTimeout(leadsT); if (sb && !isLocked()) leadsT = setTimeout(loadLeads, 300); }
@@ -1968,7 +2176,7 @@
       state.leadsLoaded = true; state.leadsErr = false; leadRetryMs = 5000;
       afterLeads(); aufraeumenNachsehen();
       // Verbindung wieder da: Leads, die nach „Termin eintragen“ nicht nachziehen konnten, jetzt erledigen
-      terminNachholen();
+      terminNachholen(); verknNachholen();
     } catch (e) {
       if (seq !== leadSeq || projFail(e)) return;
       // Später erneut versuchen, mit wachsendem Abstand; Termine und Projekte laufen davon unabhängig weiter
@@ -2355,6 +2563,9 @@
     if (!ro && l.status === "neu") knoepfe.push(knopf("leadKontakt", " primary", kontaktErreicht, svgCheck(), "Kontakt erreicht"));
     if (!ro && LGESPRAECH.includes(l.status)) knoepfe.push(knopf("leadTermin", " primary", terminEintragen, svgPlus(), "Termin eintragen"));
     if (!ro && (l.status === "neu" || LGESPRAECH.includes(l.status))) knoepfe.push(knopf("leadRekl", "", () => grundZeigen("reklamiert"), svgRekl(), "Reklamieren"));
+    // Hat jemand anders den Lead inzwischen entschieden (oder ist er archiviert), schließt die Terminauswahl
+    if (!$("l-terminFeld").hidden && (ro || !leadVerknuepfbar(l))) { lTerminNr++; $("l-terminFeld").hidden = true; fill($("l-termin")); $("l-terminKurz").hidden = true; }
+    if (!ro && leadVerknuepfbar(l) && $("l-terminFeld").hidden) knoepfe.push(knopf("leadVerkn", "", () => terminWahl(), svgKal(), "Vorhandener Termin"));
     if (termin && !arch) knoepfe.push(knopf("leadZumTermin", "", zumTermin, svgKal(), "Zum Termin"));
     if (arch && state.canWrite) knoepfe.push(knopf("leadZurueck", " primary", () => archivieren(false), svgArch(), "Zurückholen"));
     fill(box,
@@ -2373,10 +2584,10 @@
     lStatusAuf = status; syncGrund();
   }
   // Während des Speicherns oder Löschens: Knöpfe und Screenshot gesperrt (was gespeichert wird, steht fest)
-  function lSperre(on) { for (const id of ["leadSave", "leadDel", "leadArch", "leadKontakt", "leadTermin", "leadRekl", "leadZumTermin", "leadZurueck"]) { const b = $(id); if (b) b.disabled = on; } renderBild(); }
+  function lSperre(on) { for (const id of ["leadSave", "leadDel", "leadArch", "leadKontakt", "leadTermin", "leadRekl", "leadZumTermin", "leadZurueck", "leadVerkn", "lTerminOk"]) { const b = $(id); if (b) b.disabled = on; } renderBild(); }
   // Weicht das Formular vom gespeicherten Lead ab? Ein gerade gewählter Screenshot, der noch verkleinert wird, zählt mit.
-  function lGeaendert() {
-    const l = lEdit && state.leads.get(lEdit);
+  // l: der Stand, mit dem verglichen wird (sonst der gespeicherte Lead)
+  function lGeaendert(l = lEdit && state.leads.get(lEdit)) {
     if (!l) return true;
     return $("l-kunde").value.replace(/\s+/g, " ").trim() !== l.kunde || lArt() !== l.art || ($("l-notiz").value.trim() || null) !== (l.notiz || null)
       || $("l-eingang").value !== lEingangAuf || lStatusWahl() !== lStatusAuf || lBild.art !== "alt" || lVerkl
@@ -2404,10 +2615,11 @@
     if (state.tab !== "kalender") setTab("kalender");
     const heute = ymd(new Date());
     openEditor(null, state.selected >= heute ? state.selected : heute);
-    $("f-title").value = `${l.status === "meeting" ? "Online-Meeting: " : ""}${l.kunde} · ${leadArtLabel(l.art)}`.slice(0, 120);
+    $("f-title").value = leadTitel(l);
     $("cat-begehung").checked = true;
     if (l.notiz) $("f-note").value = l.notiz.slice(0, 1000);
     terminLead = { id: l.id, frei: leadFrei(l) };
+    syncLeadField();
   }
   // Erledigter Lead mit festgelegtem Termin: zum Tag im Kalender (ungespeicherte Änderungen vorher speichern)
   async function zumTermin() {
@@ -2418,6 +2630,183 @@
     leadDlg.close();
     state.selected = l.termin_datum; state.cursor = parse(l.termin_datum);
     if (state.tab !== "kalender") setTab("kalender"); else render();
+  }
+  // Der Termin steht schon im Kalender (vor „Begehung nur mit Lead“ oder als andere Art eingetragen): hier verknüpfen.
+  // Zur Wahl stehen Kunden-, Baustellen- und Begehungstermine (Urlaub und Büro gehören nie zu einem Lead), nicht durchgestrichen und
+  // zu keinem anderen Lead gehörend: die nächsten 180 Tage (die ersten 150) und die letzten 30 Tage (die jüngsten 50).
+  // Die, deren Titel den Kunden nennt, zuerst (der erste davon ist vorgewählt, außer nach einer Fehlermeldung).
+  let lTerminNr = 0;
+  const LT_ARTEN = ["kunde", "baustelle", "begehung"], LT_VOR = 150, LT_ZURUECK = 50;
+  const terminZeile = (x) => { const d = parse(x.date), jahr = d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() : "";
+    return `${DOW[dowIdx(d)]} ${d.getDate()}.${d.getMonth() + 1}.${jahr} ${x.all_day ? "ganztägig" : String(x.start_time || "").slice(0, 5)} · ${kurz(x.title, 60)} · ${catLabel(x.cat)}`; };
+  async function terminWahl(meldung) {
+    const g = lGen, sg = sitzGen, id = lEdit, nr = ++lTerminNr, sel = $("l-termin");
+    if (!sb || !state.leads.has(id)) return;
+    $("leadErr").textContent = meldung || "";
+    fill(sel, el("option", { value: "" }, "Termine werden geladen …")); sel.disabled = true; $("lTerminOk").disabled = true; $("l-terminKurz").hidden = true;
+    $("l-terminFeld").hidden = false; renderLeadStand(); $("lTerminAbbr").focus();
+    const hier = () => g === lGen && nr === lTerminNr && leadDlg.open && gleicheSitzung(sg) && !$("l-terminFeld").hidden;
+    try {
+      const heute = new Date(), h = ymd(heute);
+      const basis = () => sb.from(T).select("id,title,date,start_time,all_day,cat").is("gestrichen", null).in("cat", LT_ARTEN);
+      const [vor, zur] = await Promise.all([
+        basis().gte("date", h).lte("date", ymd(addDays(heute, 180))).order("date").order("start_time").limit(LT_VOR),
+        basis().gte("date", ymd(addDays(heute, -30))).lt("date", h).order("date", { ascending: false }).order("start_time", { ascending: false }).limit(LT_ZURUECK)]);
+      check(vor); check(zur);
+      if (!hier()) return;
+      const alle = [...vor.data, ...zur.data];
+      // Welche gehören schon zu einem Lead? In Stücken zu 50 fragen (alle Kennungen auf einmal machten die Adresse zu lang)
+      const teile = [];
+      for (let i = 0; i < alle.length; i += 50) teile.push(alle.slice(i, i + 50).map(x => x.id));
+      const antw = await Promise.all(teile.map(t => sb.from(LT).select("id,termin_id").in("termin_id", t)));
+      for (const v of antw) check(v);
+      if (!hier()) return;
+      const belegt = new Set(antw.flatMap(v => v.data).filter(x => x.id !== id).map(x => x.termin_id));
+      const l = state.leads.get(id), namen = new Set(nameWoerter(l ? l.kunde : ""));
+      const passt = (x) => woerter(x.title).some(w => namen.has(w)) ? 1 : 0;
+      const list = alle.filter(x => !belegt.has(x.id)).sort((a, b) => passt(b) - passt(a));
+      fill(sel, el("option", { value: "" }, list.length ? "Bitte Termin wählen" : "Kein Termin ohne Lead gefunden"),
+        ...list.map(x => el("option", { value: x.id, "data-cat": x.cat }, terminZeile(x))));
+      sel.value = !meldung && list.length && passt(list[0]) ? list[0].id : "";
+      const v1 = vor.data.length >= LT_VOR, v2 = zur.data.length >= LT_ZURUECK;
+      $("l-terminKurz").textContent = v1 || v2 ? `Zur Wahl stehen nur ${v1 ? `die nächsten ${LT_VOR}` : ""}${v1 && v2 ? " und " : ""}${v2 ? `die letzten ${LT_ZURUECK}` : ""} Termine.` : "";
+      $("l-terminKurz").hidden = !(v1 || v2);
+      sel.disabled = false; $("lTerminOk").disabled = lBusy === lGen; sel.focus();
+    } catch (e) {
+      if (!hier() || projFail(e, sg)) return;
+      fill(sel, el("option", { value: "" }, "Termine nicht geladen"));
+      $("leadErr").textContent = "Die Termine konnten nicht geladen werden. Prüfe die Verbindung und versuche es erneut.";
+    }
+  }
+  function terminWahlZu() {
+    lTerminNr++; $("l-terminFeld").hidden = true; fill($("l-termin")); $("l-terminKurz").hidden = true; renderLeadStand();
+  }
+  $("lTerminAbbr").addEventListener("click", () => { terminWahlZu(); $("leadErr").textContent = ""; $("leadVerkn")?.focus(); });
+  $("lTerminOk").addEventListener("click", async () => {
+    const g = lGen, id = lEdit, sel = $("l-termin"), tid = sel.value, cat = sel.selectedOptions[0]?.dataset.cat;
+    if (!tid) { $("leadErr").textContent = "Bitte den Termin wählen."; sel.focus(); return; }
+    // Ungespeicherte Änderungen erst speichern (wie bei „Termin eintragen“)
+    if (lGeaendert() && !(await speichern({ bleib: true }))) return;
+    const l = state.leads.get(id), sg = sitzGen;
+    if (g !== lGen || !leadDlg.open || !l || lBusy === lGen) return;
+    // Inzwischen anders entschieden (von jemand anders, oder der eben gespeicherte Stand): nicht verknüpfen, sondern sagen
+    if (!leadVerknuepfbar(l)) {
+      if (!$("l-terminFeld").hidden) terminWahlZu();
+      $("leadErr").textContent = `Der Lead ${l.archiviert ? "ist inzwischen archiviert" : l.status === "erledigt" ? "hat inzwischen einen Termin"
+        : `steht inzwischen auf „${LSTAND[l.status] || l.status}“`} und wird deshalb nicht verknüpft.`;
+      return;
+    }
+    lBusy = g; lSperre(true); $("leadErr").textContent = "";
+    // fokus: Fenster nachgezogen, danach Fokus auf „Zum Termin“. geloest: die alte Verknüpfung (derselbe Termin) ist schon gelöst.
+    // basis: der Stand vor dem Verknüpfen (nach dem Lösen der gelöste), auf ihm zieht lNachziehen das Fenster nach
+    let fokus = false, geloest = false, basis = l;
+    const fertig = async (d) => { fokus = await verknuepft(d, tid, cat, sg, basis, g); };
+    // Kam die Änderung schon an (Antwort verloren, oder ein früherer Versuch)? Dann steht der Lead erledigt mit diesem Termin da.
+    const istVerknuepft = (d) => d && d.status === "erledigt" && d.termin_id === tid && !d.archiviert;
+    try {
+      // Hat inzwischen jemand anders einen Lead mit dem Termin verknüpft? Dann nicht noch einen
+      const b = await sb.from(LT).select("id,kunde").eq("termin_id", tid).neq("id", id).limit(1);
+      check(b);
+      if (!gleicheSitzung(sg)) return;
+      if (b.data.length) { if (g === lGen && leadDlg.open) terminWahl(`Der Termin gehört inzwischen zu „${kurz(b.data[0].kunde, 60)}“. Bitte einen anderen wählen.`); return; }
+      // Nur auf dem Stand, den das Fenster zeigt (sonst hätte jemand anders inzwischen entschieden)
+      let stamp = l.updated_at;
+      // Derselbe Termin wie vor dem Wiederöffnen (vielleicht inzwischen verschoben): erst lösen, sonst behielte die Datenbank Tag, Uhrzeit,
+      // wer und wann von damals (und strich die Verknüpfung still, wäre der Termin inzwischen durchgestrichen)
+      if (l.termin_id === tid) {
+        const los = await sb.from(LT).update({ termin_id: null }).eq("id", id).eq("updated_at", stamp).eq("archiviert", false).select(LCOLS);
+        check(los);
+        if (!gleicheSitzung(sg)) return;
+        if (los.data.length) { geloest = true; stamp = los.data[0].updated_at; putLead(los.data[0]); lNachziehen(los.data[0], basis, g); basis = los.data[0]; }
+      }
+      const res = await sb.from(LT).update({ status: "erledigt", termin_id: tid }).eq("id", id).eq("updated_at", stamp).eq("archiviert", false).select(LCOLS);
+      check(res);
+      if (!gleicheSitzung(sg)) return;
+      const d = res.data.length ? res.data[0] : await leadLesen(id);
+      if (!gleicheSitzung(sg)) return;
+      if (istVerknuepft(d)) { await fertig(d); return; }
+      if (d) { putLead(d); afterLeads(); } else leadsBald();
+      if (g !== lGen || !leadDlg.open) return;
+      if (res.data.length) { lNachziehen(d, basis, g); terminWahl("Der Termin wurde inzwischen gelöscht oder durchgestrichen. Bitte einen anderen wählen."); }
+      else $("leadErr").textContent = "Jemand hat den Lead gerade geändert. Bitte noch einmal versuchen.";
+    } catch (e) {
+      // Verbindung weg (ohne Fehlercode der Datenbank): nachsehen, ob es trotzdem geklappt hat. Geht auch das nicht, beim nächsten Laden
+      if (!(e && e.code) && !loggedOut(e) && gleicheSitzung(sg)) {
+        let d = null;
+        try { d = await leadLesen(id); } catch { if (gleicheSitzung(sg)) verknOffen.set(id, { tid, cat, sg, basis }); }
+        if (!gleicheSitzung(sg)) return;
+        if (istVerknuepft(d)) { await fertig(d); return; }
+        // Nicht verknüpft, aber vielleicht schon gelöst (die Antwort darauf ging verloren): den gelesenen Stand übernehmen, sonst hielte
+        // der nächste Versuch die eigene Änderung für fremd (Eingaben während des Versuchs bleiben stehen)
+        if (d) {
+          putLead(d); afterLeads(); lNachziehen(d, basis, g);
+          if (l.termin_id === tid && !d.termin_id) geloest = true;
+        }
+      }
+      const m = leadWriteError(e, sg), weg = e && e.code === "23503";
+      if (!m || g !== lGen || !leadDlg.open) return;
+      // Termin inzwischen gelöscht oder durchgestrichen: Liste neu laden, die Meldung bleibt stehen, nichts ist vorgewählt
+      if (weg) terminWahl("Der Termin wurde inzwischen gelöscht oder durchgestrichen. Bitte einen anderen wählen.");
+      // Gelöst, aber noch nicht wieder verknüpft: das ausdrücklich sagen (der Termin gehört gerade zu keinem Lead)
+      else $("leadErr").textContent = geloest && m === STEP_ALLG ? "Die alte Verknüpfung ist gelöst, der Termin aber noch nicht wieder verknüpft. Prüfe die Verbindung und tippe noch einmal „Verknüpfen“." : m;
+    } finally {
+      // Erst jetzt sind die Knöpfe wieder frei (gesperrte lassen sich nicht fokussieren)
+      if (lBusy === g) { lBusy = -1; if (g === lGen) { lSperre(false); if (fokus && leadDlg.open) ($("leadZumTermin") || $("leadCancel")).focus(); } }
+    }
+  });
+  const leadLesen = async (id) => { const n = await sb.from(LT).select(LCOLS).eq("id", id).maybeSingle(); check(n); return n.data; };
+  // Hat sich am Lead außer Stand und Verknüpfung nichts geändert (a: der Stand vor dem Verknüpfen, d: der gelesene)?
+  const LINHALT = ["kunde", "art", "notiz", "quelle", "eingang", "bild", "grund", "archiviert"];
+  const nurVerknuepft = (a, d) => !!a && !!d && LINHALT.every((k) => (a[k] ?? null) === (d[k] ?? null));
+  // Das Fenster zeigt den Lead d: auf den Stand d nachziehen (sonst hielte das nächste Speichern die eigene Änderung für fremd), wenn sich
+  // seit basis (Stand vor dem Verknüpfen) außer Stand und Verknüpfung nichts geändert hat. Baut das Fenster auf basis auf, bleibt dabei
+  // stehen, was dort eingegeben, aber nicht gespeichert ist (Stand und Begründung zieht lStandBasis nur nach, wenn sie nicht selbst gewählt
+  // sind). Baut es auf einem älteren Stand auf, nur ohne eigene Eingaben (dann ganz, samt einer fremden Korrektur von Eingang oder Bild).
+  // eigen: das Öffnen, dessen Vorgang das ist (ein anderer laufender Vorgang im Fenster zieht selbst nach).
+  // "ja": Fenster baut jetzt auf d auf; "fremd": jemand anders hat mehr geändert (das nächste Speichern meldet den Konflikt); null: nichts zu tun.
+  function lNachziehen(d, basis, eigen) {
+    if (!d || !leadDlg.open || lEdit !== d.id || (lBusy === lGen && lGen !== eigen)) return null;
+    if (lStamp === d.updated_at) return "ja";
+    if (!nurVerknuepft(basis, d)) return "fremd";
+    if (lStamp === basis.updated_at) {
+      lStamp = d.updated_at; lStandBasis(d.status); lGrundBasis(d);
+      $("leadStamp").textContent = `Geändert ${fmtStamp(d.updated_at)}`;
+      lModus(); renderLeadStand();
+    } else if (!lGeaendert(basis)) lAktuell(d, null);
+    else return "fremd";
+    return "ja";
+  }
+  // Verknüpft: Liste und Fenster auf den neuen Stand (siehe lNachziehen). Fehlt dem Fenster eine fremde Änderung, steht dort ein Hinweis.
+  // Termine zu Leads sind Begehungen (schwarz). Gibt zurück, ob das Fenster nachgezogen wurde.
+  async function verknuepft(d, tid, cat, sg, basis, eigen) {
+    verknOffen.delete(d.id);
+    putLead(d); afterLeads();
+    const f = lNachziehen(d, basis, eigen);
+    if (f) {
+      if (!$("l-terminFeld").hidden) terminWahlZu();
+      $("leadErr").textContent = f === "fremd" ? "Termin verknüpft. Jemand anders hat den Lead inzwischen auch geändert: Abbrechen zeigt den neuen Stand." : "";
+    }
+    toast(f === "ja" ? "Termin verknüpft, Lead erledigt" : `„${kurz(d.kunde, 40)}“: Termin verknüpft, Lead erledigt`);
+    if (cat && cat !== "begehung") {
+      try { check(await sb.from(T).update({ cat: "begehung" }).eq("id", tid)); }
+      catch (e) { if (!projFail(e, sg) && gleicheSitzung(sg)) toast("Lead verknüpft. Die Art des Termins ließ sich nicht auf Begehung ändern; bitte im Kalender ändern.", 7000); }
+    }
+    return f === "ja";
+  }
+  // Verknüpfen, bei dem Antwort und Nachlesen verloren gingen: Lead → { tid, cat, sg: Anmeldung, basis: Stand davor }.
+  // Beim nächsten Laden der Leads nachsehen, ob es ankam (dann Art des Termins nachziehen und melden). Gilt nur für diese Anmeldung.
+  const verknOffen = new Map();
+  async function verknNachholen() {
+    for (const [id, v] of [...verknOffen]) {
+      if (v.sg !== sitzGen) { verknOffen.delete(id); continue; }
+      const sg = sitzGen;
+      let d;
+      try { d = await leadLesen(id); } catch { continue; }
+      if (!gleicheSitzung(sg) || verknOffen.get(id) !== v) continue;
+      if (d && d.status === "erledigt" && d.termin_id === v.tid && !d.archiviert) {
+        await verknuepft(d, v.tid, v.cat, sg, v.basis);
+      } else verknOffen.delete(id);
+    }
   }
   // Stände, aus denen ein Termin den Lead von selbst erledigt: die offenen und der, den er beim Start des Termins hatte.
   // Hat ihn inzwischen jemand anders entschieden (reklamiert, storniert, verloren, archiviert), bleibt das stehen.
@@ -2450,12 +2839,18 @@
       }
       // Nichts überschreiben. Setzt ihn später jemand von Hand auf „Erledigt“, geht der Termin mit.
       if (d && d.status !== "erledigt" && terminId) terminOffen.set(id, { t: terminId, frei: null }); else terminOffen.delete(id);
+      if (d) { putLead(d); afterLeads(); }
+      // Inzwischen gelöscht oder schon erledigt (mit einem anderen Termin oder ohne): der Termin gehört zu keinem Lead, das sagen
+      if (terminId && (!d || d.status === "erledigt") && !nachgeholt) toast(!d ? `Termin eingetragen. Den Lead${name} gibt es nicht mehr; der Termin gehört zu keinem Lead. Bitte die Art prüfen.`
+        : d.archiviert ? `Termin eingetragen. Der Lead${name} ist inzwischen archiviert; der Termin gehört zu keinem Lead. Bitte unter Leads im Archiv prüfen.`
+        : d.termin_id ? `Termin eingetragen. Der Lead${name} hat inzwischen einen anderen Termin; dieser gehört zu keinem Lead. Bitte unter Leads prüfen.`
+        : `Termin eingetragen. Der Lead${name} wurde inzwischen ohne Termin erledigt. Bitte unter Leads mit „Vorhandener Termin“ verknüpfen.`, 7000);
       if (d && d.status !== "erledigt" && !nachgeholt) toast(`Termin eingetragen. Der Lead${name} ist inzwischen ${d.archiviert ? "archiviert" : `„${LSTAND[d.status] || d.status}“`} und bleibt so; bitte unter Leads prüfen.`, 7000);
     } catch (e) {
       if (projFail(e, sg)) return;
       // Ohne Fehlercode der Datenbank (Verbindung weg): beim nächsten Laden der Leads noch einmal; Erledigen von Hand schickt den Termin mit
       if (terminId && !(e && e.code)) terminOffen.set(id, { t: terminId, frei }); else if (offenerTermin(id) === terminId) terminOffen.delete(id);
-      if (!nachgeholt) toast(`Termin eingetragen. Den Lead${name} bitte unter Leads auf „Erledigt“ setzen.`, 7000);
+      if (!nachgeholt) toast(`Termin eingetragen. Den Lead${name} bitte unter Leads mit „Vorhandener Termin“ verknüpfen.`, 7000);
     }
   }
   // Termine aus Leads, deren Lead noch nicht nachziehen konnte: Lead → { t: Termin, frei: Stände wie oben }. Mit frei holt die Seite
@@ -2616,7 +3011,10 @@
   // b: das gespeicherte Bild. Ein während des Speicherns gewähltes oder entferntes bleibt als eigene, noch nicht gespeicherte Auswahl stehen.
   function lAktuell(d, b) {
     lStamp = d.updated_at;
+    // Den Eingang zieht das Feld nach, wenn es hier niemand geändert hat (sonst setzte das nächste Speichern eine fremde Korrektur still zurück)
+    const einAlt = lEingangAuf;
     lEingangAuf = lokal(new Date(tsOf(d.eingang)));
+    if ($("l-eingang").value === einAlt) $("l-eingang").value = lEingangAuf;
     lBildAlt = d.bild || null;
     if (lBild === b) {
       if (b.art === "neu") { if (lAnz && lAnz.url) URL.revokeObjectURL(lAnz.url); lAnz = { pfad: lBildAlt, status: "ok", url: b.url }; }
@@ -2739,6 +3137,7 @@
     lEdit = lStamp = lNeuId = null; lEingangAuf = ""; lGrundAuf = ""; $("l-grundFeld").hidden = true; disarm($("leadDel")); disarm($("leadArch"));
     // Wer eingetragen hat und die benutzten Leadquellen stehen nur, solange der Lead offen ist
     $("l-angelegt").hidden = true; $("l-angelegt").textContent = ""; $("l-quellen").replaceChildren();
+    lTerminNr++; $("l-terminFeld").hidden = true; fill($("l-termin"));
   }
   leadDlg.addEventListener("close", () => {
     if (leadDlg.open) return;
@@ -3717,7 +4116,7 @@
     $("projList").replaceChildren(); $("projCount").textContent = ""; fehltGeholt.clear();
     document.querySelectorAll("#statusSeg .cnt").forEach(n => n.remove());
     leadSeq++; erlSeq++; clearTimeout(leadRetryT); clearTimeout(leadsT); leadRetryMs = 5000; lTouched = new Map(); lWeg = new Set(); lAufr.clear(); abg = erlNeu(); arc = erlNeu();
-    state.leads = new Map(); state.leadsLoaded = false; state.leadsErr = false; state.lfilter = "offen"; lOffen = new Set(); kInFlug.clear(); terminOffen.clear();
+    state.leads = new Map(); state.leadsLoaded = false; state.leadsErr = false; state.lfilter = "offen"; lOffen = new Set(); kInFlug.clear(); terminOffen.clear(); verknOffen.clear();
     $("leadList").replaceChildren(); $("leadCount").textContent = "";
     nachSeq++; nerlSeq++; clearTimeout(nachRetryT); clearTimeout(nachT); nachRetryMs = 5000; nTouched = new Map(); nWeg = new Set(); nerl = erlNeu(); nRotSig = "";
     state.nach = new Map(); state.nachLoaded = false; state.nachErr = false; state.nfilter = "offen";
