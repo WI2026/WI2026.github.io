@@ -15,11 +15,11 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="manifest" href="manifest.webmanifest">
-<link rel="stylesheet" href="style.css?v=20261026c">
+<link rel="stylesheet" href="style.css?v=20261028">
 <script src="vendor/supabase.js?v=20261026" defer></script>
 <script src="config.js?v=20261026" defer></script>
 <script src="pdf.js?v=20261026" defer></script>
-<script src="app.js?v=20261026c" defer></script>
+<script src="app.js?v=20261028" defer></script>
 <script src="bg-szene.js?v=20261026" defer></script>
 <script src="bg.js?v=20261026" defer></script>
 </head>
@@ -78,6 +78,8 @@
       <button type="button" role="tab" id="tab-leads" data-tab="leads" aria-selected="false" aria-controls="leadView" tabindex="-1">Leads<span class="tcnt num" id="leadTabCnt" aria-hidden="true" hidden></span></button>
       <button type="button" role="tab" id="tab-projekte" data-tab="projekte" aria-selected="false" aria-controls="projView" tabindex="-1">Projekte</button>
       <button type="button" role="tab" id="tab-nacharbeiten" data-tab="nacharbeiten" aria-selected="false" aria-controls="nachView" tabindex="-1">Nacharbeiten<span class="tcnt num ueber" id="nachTabCnt" aria-hidden="true" hidden></span></button>
+      <button type="button" role="tab" id="tab-eskalation" data-tab="eskalation" aria-selected="false" aria-controls="eskView" tabindex="-1">Eskalation<span class="tcnt num" id="eskTabCnt" aria-hidden="true" hidden></span></button>
+      <button type="button" role="tab" id="tab-aufgaben" data-tab="aufgaben" aria-selected="false" aria-controls="aufView" tabindex="-1" hidden>Aufgaben<span class="tcnt num" id="aufTabCnt" aria-hidden="true" hidden></span></button>
     </div>
     <div class="acts">
     <span class="me" id="me"></span>
@@ -159,7 +161,7 @@
       </div>
     </div>
     <div class="plist" id="leadList"></div>
-    <p class="phint">Neue Leads innerhalb von 24 Stunden bearbeiten. Reklamieren, stornieren und „verloren“ gehen nur mit Begründung. Statt zu löschen wird archiviert; löschen dürfen nur Verwalter. Screenshots werden verkleinert und sind nur für das Team sichtbar.</p>
+    <p class="phint">Neue Leads innerhalb von 24 Stunden bearbeiten; nicht erreicht: „Nicht erreicht“ tippen, dann wieder 24 Stunden bis zum nächsten Versuch. Reklamieren, stornieren und „verloren“ gehen nur mit Begründung. Statt zu löschen wird archiviert; löschen dürfen nur Verwalter. Screenshots werden verkleinert und sind nur für das Team sichtbar.</p>
   </section>
 
   <section class="projview nachview" id="nachView" role="tabpanel" aria-labelledby="tab-nacharbeiten" hidden>
@@ -174,7 +176,29 @@
       </div>
     </div>
     <div class="plist" id="nachList"></div>
-    <p class="phint">Nacharbeiten und Korrekturen. Rot wird, was eine Woche lang nicht bearbeitet wurde oder zur Wiedervorlage ansteht. Gespeichert wird nur Text.</p>
+    <p class="phint">Nacharbeiten und Korrekturen. Rot wird, was eine Woche lang nicht bearbeitet wurde oder zur Wiedervorlage ansteht. Was dringend ist, im Fenster der Nacharbeit „Eskalieren“: sie steht dann unter Eskalation. Gespeichert wird nur Text.</p>
+  </section>
+
+  <section class="projview nachview" id="eskView" role="tabpanel" aria-labelledby="tab-eskalation" hidden>
+    <div class="ptools">
+      <div class="period">
+        <h2>Eskalation</h2>
+        <span class="kw" id="eskCount"></span>
+      </div>
+    </div>
+    <div class="plist" id="eskList"></div>
+    <p class="phint">Eskalierte Nacharbeiten. Rot wird, was einen Tag lang nicht bearbeitet wurde oder zur Wiedervorlage ansteht. Eskaliert wird im Fenster einer Nacharbeit; aufheben dürfen nur Verwalter. Erledigte stehen unter Nacharbeiten, „Erledigt“.</p>
+  </section>
+
+  <section class="projview nachview aufview" id="aufView" role="tabpanel" aria-labelledby="tab-aufgaben" hidden>
+    <div class="ptools">
+      <div class="period">
+        <h2>Zugewiesene Aufgaben</h2>
+        <span class="kw" id="aufCount"></span>
+      </div>
+    </div>
+    <div class="plist" id="aufList"></div>
+    <p class="phint" id="aufHint"></p>
   </section>
 </div>
 
@@ -196,7 +220,7 @@
       <button class="progrow" type="button" id="progRow" hidden></button>
     </div>
     <div class="field" id="leadField" hidden>
-      <label for="f-lead">Lead <span class="opt">(kontaktiert)</span></label>
+      <label for="f-lead">Lead <span class="opt">(offen, ohne Termin)</span></label>
       <select id="f-lead"></select>
       <p class="hint" id="leadFieldHint"></p>
     </div>
@@ -473,6 +497,51 @@
       <button class="btn primary" type="submit" id="nachSave">Anlegen</button>
     </div>
   </form>
+</dialog>
+
+<dialog id="aufDlg" aria-labelledby="aufDlgTitle">
+  <form id="aufForm" method="dialog" novalidate autocomplete="off">
+    <h4 id="aufDlgTitle">Neue Aufgabe</h4>
+    <div class="lstand" id="aufStand" hidden></div>
+    <div id="aufFelder">
+      <div class="field">
+        <label for="a-titel">Aufgabe</label>
+        <input type="text" id="a-titel" maxlength="120" placeholder="z. B. Material für Baustelle Süd bestellen" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="a-fuer">Für</label>
+        <select id="a-fuer"></select>
+      </div>
+      <div class="field">
+        <label for="a-faellig">Erledigen bis <span class="opt">(optional, ab dem Tag danach rot)</span></label>
+        <input type="date" id="a-faellig" min="2020-01-01" max="2100-12-31">
+      </div>
+      <div class="field">
+        <label for="a-text">Beschreibung <span class="opt">(optional)</span></label>
+        <textarea id="a-text" maxlength="1000" autocomplete="off" placeholder="Was genau ist zu tun?"></textarea>
+      </div>
+    </div>
+    <div class="err" id="aufErr" role="alert"></div>
+    <div class="actions">
+      <button class="btn danger" type="button" id="aufDel" hidden>Löschen</button>
+      <span class="stamp" id="aufStamp"></span>
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="aufCancel">Abbrechen</button>
+      <button class="btn primary" type="submit" id="aufSave">Vergeben</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="aufPop" aria-labelledby="aufPopTitle">
+  <div class="aufpop">
+    <h4 id="aufPopTitle" tabindex="-1">Neue Aufgabe für dich</h4>
+    <ul class="aufpliste" id="aufPopListe"></ul>
+    <div class="err" id="aufPopErr" role="alert"></div>
+    <div class="actions">
+      <span class="spacer"></span>
+      <button class="btn ghost" type="button" id="aufPopSpaeter">Später</button>
+    </div>
+  </div>
 </dialog>
 
 <div class="toast" id="toast" hidden role="status" popover="manual"></div>

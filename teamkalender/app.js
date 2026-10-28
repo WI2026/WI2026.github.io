@@ -61,14 +61,17 @@
     { id: "energiemanagement", label: "Energiemanagement" },
   ];
   const leadArtLabel = (id) => (LEAD_ARTEN.find(a => a.id === id) || LEAD_ARTEN[0]).label;
-  // Stände in der Reihenfolge des Ablaufs: nicht bearbeitet (24-Stunden-Regel), kontaktiert, Rückfragen, Online-Meeting notwendig,
+  // Stände in der Reihenfolge des Ablaufs: nicht bearbeitet (24-Stunden-Regel), Kontaktversuch (angerufen, nicht erreicht; wieder
+  // 24 Stunden bis zum nächsten Versuch), Rückfragen, Online-Meeting notwendig (beide: erreicht, noch kein Termin),
   // erledigt (Termin festgelegt oder ohne Termin abgeschlossen); mit Begründung: reklamiert, storniert, verloren
-  const LSTAND = { neu: "Nicht bearbeitet", kontaktiert: "Kontaktiert", rueckfrage: "Rückfragen", meeting: "Online-Meeting", erledigt: "Erledigt",
+  const LSTAND = { neu: "Nicht bearbeitet", kontaktiert: "Kontaktversuch", rueckfrage: "Rückfragen", meeting: "Online-Meeting", erledigt: "Erledigt",
     reklamiert: "Reklamiert", storniert: "Storniert", verloren: "Verloren" };
   const LSTAND_FARBE = { neu: "var(--holiday)", kontaktiert: "var(--cat-kunde)", rueckfrage: "var(--cat-baustelle)", meeting: "var(--accent-ink)",
     erledigt: "var(--brand-leaf)", reklamiert: "var(--today)", storniert: "var(--lead-storniert)", verloren: "var(--lead-verloren)" };
-  // Nach einem Gespräch: hier geht es mit „Termin eintragen“ weiter
-  const LGESPRAECH = ["kontaktiert", "rueckfrage", "meeting"];
+  // Erreicht, aber noch kein Termin
+  const LGESPRAECH = ["rueckfrage", "meeting"];
+  // Offen und ohne Termin: hier geht es mit „Termin eintragen“ (oder der Lead-Auswahl im Termin) weiter
+  const LOFFEN = ["neu", "kontaktiert", ...LGESPRAECH];
   // Nur mit Begründung (Pflicht, 3 bis 500 Zeichen); abgeschlossen (nicht mehr in „Offen“ und nicht in der Zahl am Reiter)
   const LGRUND = ["reklamiert", "storniert", "verloren"], LZU = ["erledigt", "storniert", "verloren"];
   const GRUND = {
@@ -79,7 +82,9 @@
   // Kanban: Spalten mit den Ständen, die sie zeigen
   const KANBAN = [
     { id: "neu", titel: "Nicht kontaktiert", st: ["neu"] },
-    { id: "kontaktiert", titel: "Kontaktiert", st: LGESPRAECH },
+    { id: "kontaktiert", titel: "Kontaktversuch, kein Termin", st: ["kontaktiert"] },
+    // Hierher gezogen: „Rückfragen“ (Online-Meeting lässt sich im Lead wählen)
+    { id: "rueckfrage", titel: "Erreicht, Termin offen", st: LGESPRAECH },
     { id: "erledigt", titel: "Termin festgelegt", st: ["erledigt"] },
     { id: "reklamiert", titel: "Reklamiert", st: ["reklamiert"] },
     { id: "storniert", titel: "Storniert", st: ["storniert"] },
@@ -166,7 +171,7 @@
     ranges: [],
     pdfBusy: false,
     me: null,   // { name, admin, team } aus der Datenbank
-    tab: ["projekte", "leads", "nacharbeiten"].includes(sitzung.get("kal.tab")) ? sitzung.get("kal.tab") : "kalender",
+    tab: ["projekte", "leads", "nacharbeiten", "eskalation", "aufgaben"].includes(sitzung.get("kal.tab")) ? sitzung.get("kal.tab") : "kalender",
     projekte: new Map(),     // alle Projekte (nur Kopfdaten)
     schritte: new Map(),     // Schritte der geladenen Projekte, nach Schritt-Kennung
     schritteVon: new Set(),  // Projekte, deren Schritte geladen sind
@@ -183,6 +188,9 @@
     nachLoaded: false,
     nachErr: false,
     nfilter: "offen",        // Liste: offen oder erledigt
+    auf: new Map(),          // zugewiesene Aufgaben: Verwalter alle, sonst nur die eigenen (offene und die letzten erledigten)
+    aufLoaded: false,
+    aufErr: false,
   };
   // Schritte, die gerade geladen werden, und solche, die nach einem Fehler später erneut geladen werden
   // Laufende Einzel-Ladungen: Projekt → Nummer des Ladevorgangs (nur der eigene Vorgang räumt seinen Eintrag ab)
@@ -281,14 +289,20 @@
   const narrow = matchMedia("(max-width: 720px)");
   function render() {
     const proj = state.tab === "projekte", leads = state.tab === "leads", nach = state.tab === "nacharbeiten";
+    const esk = state.tab === "eskalation", auf = state.tab === "aufgaben", kal = !(proj || leads || nach || esk || auf);
     document.querySelectorAll(".tabs button").forEach(b => { const on = b.dataset.tab === state.tab; b.setAttribute("aria-selected", String(on)); b.tabIndex = on ? 0 : -1; });
-    $("calView").hidden = proj || leads || nach; $("projView").hidden = !proj; $("leadView").hidden = !leads; $("nachView").hidden = !nach;
-    $("newLbl").textContent = proj ? "Neues Projekt" : leads ? "Neuer Lead" : nach ? "Neue Nacharbeit" : "Neuer Termin";
-    $("pdfBtn").hidden = proj || leads || nach;
-    leadBadge(); nachBadge();
+    $("calView").hidden = !kal; $("projView").hidden = !proj; $("leadView").hidden = !leads; $("nachView").hidden = !nach;
+    $("eskView").hidden = !esk; $("aufView").hidden = !auf;
+    $("newLbl").textContent = proj ? "Neues Projekt" : leads ? "Neuer Lead" : nach ? "Neue Nacharbeit" : auf ? "Neue Aufgabe" : "Neuer Termin";
+    // Eskalationen entstehen nur aus Nacharbeiten, Aufgaben vergeben nur Verwalter
+    $("newBtn").hidden = esk || (auf && !istVerwalter());
+    $("pdfBtn").hidden = !kal;
+    leadBadge(); nachBadge(); eskBadge(); aufBadge();
     if (proj) renderProjekte();
     else if (leads) renderLeads();
     else if (nach) renderNach();
+    else if (esk) renderEsk();
+    else if (auf) renderAuf();
     else {
       document.querySelectorAll(".seg button[data-view]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.view === state.view)));
       const board = $("board");
@@ -638,8 +652,8 @@
   // Termin aus einem Lead („Termin eintragen“): nach dem Speichern gilt der Lead als erledigt (nur für dieses Öffnen).
   // Aus einer Nacharbeit: nach dem Speichern steht der Termin als Vermerk in deren Verlauf.
   let terminLead = null, terminNach = null;
-  // Querverbindung Termin ↔ Lead. Im Termin steht unter „Projekt“ die Auswahl „Lead“ mit den Leads, bei denen „Kontakt erreicht“
-  // gesetzt ist (Kontaktiert, Rückfragen, Online-Meeting). Wer einen wählt, macht den Termin zur Begehung; beim Speichern steht der
+  // Querverbindung Termin ↔ Lead. Im Termin steht unter „Projekt“ die Auswahl „Lead“ mit den offenen Leads ohne Termin
+  // (nicht bearbeitet, Kontaktversuch, Rückfragen, Online-Meeting). Wer einen wählt, macht den Termin zur Begehung; beim Speichern steht der
   // Lead wie mit „Termin eintragen“ auf „Termin festgelegt“ (die Datenbank trägt Tag, Uhrzeit, wer und wann ein).
   // Begehung / Aufmaß gehört immer zu einem Lead: Wer die Art im Kalender selbst wählt (neuer Termin, oder ein Termin bekommt
   // diese Art), muss den Lead wählen. Aus einem Lead heraus steht er schon fest. Bestehende Begehungen bleiben, wie sie sind.
@@ -649,10 +663,10 @@
   // leadGewaehlt: der Lead, den man hier gewählt hat (fällt er aus der Auswahl, weil ihn jemand anders entschieden hat, sagt es das
   // Speichern, statt still ohne ihn zu speichern). vorbelegt: was die Seite aus dem gewählten Lead in leere Felder geschrieben hat.
   let catAtOpen = "", leadHinweisWeg = false, leadDran = null, leadDranP = null, leadGewaehlt = "", vorbelegt = null;
-  const leadWaehlbar = (l) => !l.archiviert && LGESPRAECH.includes(l.status);
-  // Im Lead „Vorhandener Termin“: ein kontaktierter Lead, oder einer, der ohne Termin auf „Erledigt“ gesetzt wurde (z. B. von Hand,
+  const leadWaehlbar = (l) => !l.archiviert && LOFFEN.includes(l.status);
+  // Im Lead „Vorhandener Termin“: ein offener Lead, oder einer, der ohne Termin auf „Erledigt“ gesetzt wurde (z. B. von Hand,
   // während der Termin schon im Kalender stand)
-  const leadVerknuepfbar = (l) => !l.archiviert && (LGESPRAECH.includes(l.status) || (l.status === "erledigt" && !l.termin_id));
+  const leadVerknuepfbar = (l) => !l.archiviert && (LOFFEN.includes(l.status) || (l.status === "erledigt" && !l.termin_id));
   const leadTitel = (l) => `${l.status === "meeting" ? "Online-Meeting: " : ""}${l.kunde} · ${leadArtLabel(l.art)}`.slice(0, 120);
   const leadZeile = (l) => `${kurz(l.kunde, 60)} · ${leadArtLabel(l.art)} · ${LSTAND[l.status] || l.status}`;
   const gewaehlteArt = () => (dlg.querySelector('input[name="cat"]:checked') || {}).value || "baustelle";
@@ -698,16 +712,16 @@
       return;
     }
     const list = [...state.leads.values()].filter(leadWaehlbar).sort((a, b) => a.kunde.localeCompare(b.kunde, "de"));
-    fill(sel, el("option", { value: "" }, !state.leadsLoaded ? "Leads werden geladen …" : !list.length ? "Kein kontaktierter Lead" : leadPflicht() ? "Bitte Lead wählen" : "Kein Lead"),
+    fill(sel, el("option", { value: "" }, !state.leadsLoaded ? "Leads werden geladen …" : !list.length ? "Kein offener Lead" : leadPflicht() ? "Bitte Lead wählen" : "Kein Lead"),
       ...list.map(l => el("option", { value: l.id }, leadZeile(l))));
     sel.disabled = false;
     sel.value = list.some(l => l.id === leadGewaehlt) ? leadGewaehlt : "";
     hint.textContent = leadGewaehlt && state.leadsLoaded && !sel.value ? leadWegText()
       : state.leadsLoaded && !list.length
-      ? (leadPflicht() ? "Begehungen gehören immer zu einem Lead, und gerade hat kein Lead „Kontakt erreicht“. Bitte eine andere Art wählen oder zuerst den Lead kontaktieren."
-        : "Hier stehen die Leads mit „Kontakt erreicht“. Gerade gibt es keinen.")
+      ? (leadPflicht() ? "Begehungen gehören immer zu einem Lead, und gerade ist kein Lead ohne Termin offen. Bitte eine andere Art wählen oder zuerst den Lead anlegen."
+        : "Hier stehen die offenen Leads ohne Termin. Gerade gibt es keinen.")
       : leadPflicht() ? "Begehungen gehören immer zu einem Lead. Beim Speichern steht der Lead auf „Termin festgelegt“."
-      : "Leads mit „Kontakt erreicht“. Mit Lead wird der Termin eine Begehung, und der Lead steht beim Speichern auf „Termin festgelegt“.";
+      : "Offene Leads ohne Termin. Mit Lead wird der Termin eine Begehung, und der Lead steht beim Speichern auf „Termin festgelegt“.";
   }
   // Der gewählte Lead steht nicht mehr zur Wahl (jemand anders hat ihn inzwischen entschieden, archiviert oder gelöscht)
   function leadWegText() {
@@ -741,7 +755,7 @@
     if (!$("f-title").value.trim()) { $("f-title").value = leadTitel(l); vorbelegt.titel = $("f-title").value; }
     if (!$("f-note").value.trim() && l.notiz) { $("f-note").value = l.notiz.slice(0, 1000); vorbelegt.notiz = $("f-note").value; }
   });
-  // Nennt der Titel eines neuen Termins einen kontaktierten Lead ohne Termin? Ein Wort des Namens mit mindestens 4 Zeichen genügt: der Teil des
+  // Nennt der Titel eines neuen Termins einen offenen Lead ohne Termin? Ein Wort des Namens mit mindestens 4 Zeichen genügt: der Teil des
   // Kundenfelds vor dem ersten Komma („Müller, Hauptstraße 4, Ort“), ohne Anrede und allgemeine Wörter. Der Hinweis nennt den Lead
   // und lässt sich mit „Ohne Lead speichern“ übergehen.
   const NAMENSFUELLER = new Set(["herr", "frau", "familie", "firma", "gmbh", "kunde", "anfrage", "termin", "begehung", "aufmaß", "online", "meeting"]);
@@ -757,7 +771,7 @@
     fill(box,
       el("span", { class: "lsi", "aria-hidden": "true" }, svgKal()),
       el("span", { class: "lsx" }, el("strong", null, "Gehört der Termin zu einem Lead?"),
-        el("span", null, `„${kurz(l.kunde, 60)}“ (${leadArtLabel(l.art)}) ist kontaktiert und hat noch keinen Termin. Termine zu Leads als Begehung mit dem Lead speichern, dann steht der Lead auf „Termin festgelegt“.`)),
+        el("span", null, `„${kurz(l.kunde, 60)}“ (${leadArtLabel(l.art)}) ist offen und hat noch keinen Termin. Termine zu Leads als Begehung mit dem Lead speichern, dann steht der Lead auf „Termin festgelegt“.`)),
       el("span", { class: "lsb" },
         el("button", { class: "btn small primary", type: "button", id: "leadHinweisJa", onclick: () => {
           if (!state.leads.has(l.id)) { zeigLeadHinweis(null); return; }
@@ -846,7 +860,7 @@
       : leadGewaehlt && !gueltig && state.leadsLoaded ? leadWegText()
       : pflicht && !gueltig ? (!state.leadsLoaded ? "Die Leads werden noch geladen. Bitte kurz warten und erneut speichern."
         : [...state.leads.values()].some(leadWaehlbar) ? "Bitte den Lead wählen, zu dem die Begehung gehört."
-        : "Begehungen gehören immer zu einem Lead, und gerade hat kein Lead „Kontakt erreicht“. Bitte eine andere Art wählen oder zuerst den Lead kontaktieren.")
+        : "Begehungen gehören immer zu einem Lead, und gerade ist kein Lead ohne Termin offen. Bitte eine andere Art wählen oder zuerst den Lead anlegen.")
       : "";
     const err = !title ? "Bitte einen Titel eintragen." : !/^\d{4}-\d{2}-\d{2}$/.test(date) ? "Bitte ein Datum wählen."
       : !allDay && (!start || !end) ? "Bitte Uhrzeit von und bis angeben."
@@ -998,21 +1012,23 @@
   $("nextBtn").addEventListener("click", () => shift(1));
   $("todayBtn").addEventListener("click", () => { state.cursor = new Date(); state.selected = ymd(new Date()); render(); });
   $("newBtn").addEventListener("click", () => state.tab === "projekte" ? openProjForm(null, false) : state.tab === "leads" ? openLead(null)
-    : state.tab === "nacharbeiten" ? openNach(null) : openEditor(null, state.selected));
-  // Reiter Kalender / Leads / Projekte / Nacharbeiten; Pfeiltasten wechseln wie bei Registerkarten üblich
-  const TABS = ["kalender", "leads", "projekte", "nacharbeiten"];
+    : state.tab === "nacharbeiten" ? openNach(null) : state.tab === "aufgaben" ? openAuf(null) : state.tab === "eskalation" ? null : openEditor(null, state.selected));
+  // Reiter Kalender / Leads / Projekte / Nacharbeiten / Eskalation / Aufgaben; Pfeiltasten wechseln wie bei Registerkarten üblich
+  // (verborgene Reiter überspringen: „Aufgaben“ fehlt beim Team-Zugang)
+  const ALLE_TABS = ["kalender", "leads", "projekte", "nacharbeiten", "eskalation", "aufgaben"];
   function setTab(t) {
     if (state.tab === t) return;
     state.tab = t; sitzung.set("kal.tab", t);
     meBald();
     render();
     if (t === "projekte") loadNaechste();
+    if (t === "aufgaben" && state.aufLoaded) aufBald();
   }
   document.querySelectorAll(".tabs button").forEach(b => {
     b.addEventListener("click", () => setTab(b.dataset.tab));
     b.addEventListener("keydown", (ev) => {
       if (ev.altKey || ev.ctrlKey || ev.metaKey) return;
-      const i = TABS.indexOf(state.tab), n = TABS.length;
+      const TABS = ALLE_TABS.filter(t => !$("tab-" + t).hidden), i = TABS.indexOf(state.tab), n = TABS.length;
       const t = ev.key === "Home" ? TABS[0] : ev.key === "End" ? TABS[n - 1]
         : ev.key === "ArrowLeft" ? TABS[(i + n - 1) % n] : ev.key === "ArrowRight" ? TABS[(i + 1) % n] : null;
       if (!t) return;
@@ -1882,7 +1898,8 @@
   // Zählt Öffnen und Schließen des Projektformulars: späte Antworten ändern nur das Formular, aus dem sie kamen
   let projGen = 0;
   // Verwalter mit eigenem Zugang (dürfen Projekte und erledigte Schritte löschen; die Datenbank prüft das ebenso)
-  const istVerwalter = () => !!(state.me && state.me.admin && !state.me.team);
+  // (als Funktion, weil schon das erste Zeichnen der Seite sie braucht)
+  function istVerwalter() { return !!(state.me && state.me.admin && !state.me.team); }
   $("arten").replaceChildren(...ARTEN.map((a, i) => el("label", { style: "--c:var(--accent-ink)" },
     el("input", { type: "radio", name: "art", value: a.id, id: `art-${a.id}`, checked: i === 0 }), a.label)));
   $("p-status").replaceChildren(...Object.entries(STAND).map(([k, v]) => el("label", { style: `--c:${STAND_FARBE[k]}` },
@@ -2087,15 +2104,16 @@
   }));
 
   // ---------- Leads ----------
-  // Anfragen von Kunden. Neue Leads innerhalb von 24 Stunden kontaktieren; wann und von wem erreicht, trägt die Datenbank ein.
-  // Danach führt „Termin eintragen“ in den Kalender, mit dem Speichern des Termins gilt der Lead als erledigt.
+  // Anfragen von Kunden. Neue Leads innerhalb von 24 Stunden kontaktieren. Nicht erreicht: „Nicht erreicht“ zählt den Kontaktversuch
+  // (wann und von wem trägt die Datenbank ein), ab da wieder 24 Stunden bis zum nächsten Versuch.
+  // Erreicht: „Termin eintragen“ führt in den Kalender, mit dem Speichern des Termins gilt der Lead als erledigt.
   // Reklamieren, stornieren und „verloren“ gehen nur mit Begründung. Löschen darf nur der Verwalter, alle anderen archivieren.
   // Geladen werden die offenen Leads (für die Zahl am Reiter), abgeschlossene und archivierte seitenweise erst, wenn die Liste sie zeigt.
   // Der Screenshot liegt verkleinert (meist unter 150 KB) im privaten Speicher „kalender-leads“, die Tabelle hält nur seinen Namen.
   const LT = "kalender_leads", BUCKET = "kalender-leads", ERL_SEITE = 50;
   const LCOLS = "id,kunde,art,eingang,notiz,status,kontaktiert_am,kontaktiert_von,bild,updated_at,created_at,"
     + "grund,grund_stand,grund_am,grund_von,termin_id,termin_datum,termin_zeit,termin_von,termin_festgelegt_am,"
-    + "quelle,angelegt_von,archiviert,archiviert_am,archiviert_von";
+    + "quelle,angelegt_von,archiviert,archiviert_am,archiviert_von,versuch_nr,versuch_am,versuch_von";
   const leadDlg = $("leadDlg");
   // Live-Änderungen während einer laufenden Abfrage (Kennung → Zeile oder null für gelöscht) und die gelöschten dieser Anmeldung
   let leadSeq = 0, lTouched = new Map(), lWeg = new Set(), leadRetryT = null, leadRetryMs = 5000, leadsT = null;
@@ -2207,9 +2225,16 @@
   }
 
   // ---------- Übersicht (Reiter Leads) ----------
-  // Frist eines neuen Leads: 24 Stunden ab Eingang, die letzten 4 Stunden hervorgehoben
+  // Frist: 24 Stunden ab Eingang (nach einem Kontaktversuch ab dem letzten Versuch), die letzten 4 Stunden hervorgehoben
+  // Kontaktversuche eines Leads: wie viele und der letzte (wann, von wem). Leads, die schon vor der Zählung auf „kontaktiert“ standen,
+  // zählen wie in der Datenbank als 1. Versuch zur Zeit von „kontaktiert am“. Ohne Versuch: null.
+  const versuch = (l) => l.versuch_nr ? { nr: l.versuch_nr, am: l.versuch_am, von: l.versuch_von }
+    : l.status === "kontaktiert" ? { nr: l.kontaktiert_am ? 1 : 0, am: l.kontaktiert_am, von: l.kontaktiert_von } : null;
+  // Wer hier anrufen muss: nicht bearbeitet (24 Stunden ab Eingang) oder nach einem Kontaktversuch (24 Stunden ab dem letzten Versuch)
+  const anrufen = (l) => !l.archiviert && (l.status === "neu" || l.status === "kontaktiert");
+  const fristAb = (l) => l.status === "kontaktiert" ? tsOf(versuch(l).am || l.updated_at) : tsOf(l.eingang);
   function frist(l) {
-    const rest = tsOf(l.eingang) + TAG_MS - Date.now();
+    const rest = fristAb(l) + TAG_MS - Date.now();
     if (rest > 0) {
       const h = Math.floor(rest / 3600000);
       return { cls: rest <= 4 * 3600000 ? "knapp" : "frei", text: h >= 1 ? `noch ${h} Std.` : `noch ${Math.max(1, Math.ceil(rest / 60000))} Min.` };
@@ -2224,24 +2249,26 @@
       : `${DOW[dowIdx(t)]} ${t.getDate()}.${t.getMonth() + 1}.${t.getFullYear() !== jetzt.getFullYear() ? t.getFullYear() : ""}`;
     return `${tag}, ${pad(t.getHours())}:${pad(t.getMinutes())}`;
   };
-  const nachEingang = (a, b) => tsOf(a.eingang) - tsOf(b.eingang) || String(a.id).localeCompare(String(b.id));
-  // Zahl der noch nicht bearbeiteten am Reiter (rot, wenn einer überfällig ist)
+  // Offene Leads: die mit der frühesten Frist zuerst (sonst nach Eingang)
+  const leadNachFrist = (a, b) => fristAb(a) - fristAb(b) || String(a.id).localeCompare(String(b.id));
+  // Zahl der anzurufenden am Reiter: nicht bearbeitet und Kontaktversuch (rot, wenn einer überfällig ist)
   function leadBadge() {
     const b = $("leadTabCnt"), jetzt = Date.now();
     let n = 0, ueber = 0;
-    if (state.leadsLoaded && !isLocked()) for (const l of state.leads.values()) if (l.status === "neu" && !l.archiviert) { n++; if (tsOf(l.eingang) + TAG_MS <= jetzt) ueber++; }
+    if (state.leadsLoaded && !isLocked()) for (const l of state.leads.values()) if (anrufen(l)) { n++; if (fristAb(l) + TAG_MS <= jetzt) ueber++; }
     b.hidden = !n; b.textContent = n ? String(n) : ""; b.classList.toggle("ueber", ueber > 0);
-    $("tab-leads").setAttribute("aria-label", n ? `Leads, ${n} noch nicht bearbeitet${ueber ? `, davon ${ueber} überfällig` : ""}` : "Leads");
+    $("tab-leads").setAttribute("aria-label", n ? `Leads, ${n} noch nicht erreicht${ueber ? `, davon ${ueber} überfällig` : ""}` : "Leads");
   }
   function leadZaehler() {
     if (!state.leadsLoaded) { $("leadCount").textContent = ""; return; }
     const z = {}; let ueber = 0;
-    for (const l of state.leads.values()) { if (!leadOffen(l)) continue; z[l.status] = (z[l.status] || 0) + 1; if (l.status === "neu" && frist(l).cls === "ueber") ueber++; }
+    for (const l of state.leads.values()) { if (!leadOffen(l)) continue; z[l.status] = (z[l.status] || 0) + 1; if (anrufen(l) && frist(l).cls === "ueber") ueber++; }
     const n = (k) => z[k] || 0;
-    $("leadCount").textContent = [`${n("neu")} nicht bearbeitet`, n("reklamiert") ? `${n("reklamiert")} reklamiert` : null,
+    $("leadCount").textContent = [`${n("neu")} nicht bearbeitet`,
+      n("kontaktiert") ? `${n("kontaktiert")} ${n("kontaktiert") === 1 ? "Kontaktversuch" : "Kontaktversuche"}` : null, n("reklamiert") ? `${n("reklamiert")} reklamiert` : null,
       n("rueckfrage") ? `${n("rueckfrage")} ${n("rueckfrage") === 1 ? "Rückfrage" : "Rückfragen"}` : null,
       n("meeting") ? `${n("meeting")} ${n("meeting") === 1 ? "Online-Meeting" : "Online-Meetings"}` : null,
-      n("kontaktiert") ? `${n("kontaktiert")} kontaktiert` : null, ueber ? `${ueber} überfällig` : null].filter(Boolean).join(" · ");
+      ueber ? `${ueber} überfällig` : null].filter(Boolean).join(" · ");
   }
   // Festgelegter Termin eines Leads, z. B. „Do 30.10., 10:00 Uhr“ (lang: immer mit Jahr)
   function terminText(l, lang) {
@@ -2254,6 +2281,8 @@
   function fristInhalt(l) {
     if (l.archiviert) return { cls: "arch", kids: [svgArch(), wann("archiviert", l.archiviert_am, l.archiviert_von)] };
     if (l.status === "neu") { const f = frist(l); return { cls: f.cls, kids: [svgUhr(), f.text] }; }
+    // Nach einem Kontaktversuch: Frist bis zum nächsten, z. B. „2. Versuch: noch 5 Std.“
+    if (l.status === "kontaktiert") { const f = frist(l); return { cls: f.cls, kids: [svgUhr(), `${versuch(l).nr + 1}. Versuch${f.cls === "ueber" ? " " : ": "}${f.text}`] }; }
     if (LGRUND.includes(l.status)) return { cls: GCLS[l.status], kids: [GSVG[l.status](), wann(LSTAND[l.status].toLowerCase(), l.grund_am, l.grund_von)] };
     if (l.status !== "erledigt") return { cls: "kont", kids: [svgCheck(), wann("erreicht", l.kontaktiert_am, l.kontaktiert_von)] };
     // Erledigt mit Termin: für wann er festgelegt ist, von wem und wann
@@ -2325,9 +2354,9 @@
           : el("div", { class: "empty" }, arch ? "Keine archivierten Leads." : "Noch keine abgeschlossenen Leads."),
         mehrKnopf(f, "Weitere laden", () => { if (state.lfilter === f && state.lansicht === "liste") $("leadList").querySelectorAll(".lrow")[list.length]?.focus(); }));
     } else {
-      const gruppen = [["neu", "Nicht bearbeitet (24-Stunden-Regel)"], ["reklamiert", "Reklamiert"], ["rueckfrage", "Rückfragen"],
-        ["meeting", "Online-Meeting notwendig"], ["kontaktiert", "Kontaktiert, Termin offen"]]
-        .map(([st, titel]) => [st, titel, all.filter(l => l.status === st && leadOffen(l)).sort(nachEingang)]);
+      const gruppen = [["neu", "Nicht bearbeitet (24-Stunden-Regel)"], ["kontaktiert", "Kontaktversuch, kein Termin (24 Stunden bis zum nächsten Versuch)"],
+        ["reklamiert", "Reklamiert"], ["rueckfrage", "Erreicht: Rückfragen"], ["meeting", "Erreicht: Online-Meeting notwendig"]]
+        .map(([st, titel]) => [st, titel, all.filter(l => l.status === st && leadOffen(l)).sort(leadNachFrist)]);
       const gruppe = (st, titel, list) => list.length ? el("section", { class: "lgruppe", "data-gruppe": st },
         el("h3", null, titel, el("span", { class: "num" }, list.length)), el("ul", { class: "lrows" }, list.map(l => el("li", null, leadRow(l))))) : null;
       if (gruppen.every(([, , list]) => !list.length)) box.replaceChildren(el("div", { class: "empty" }, el("span", null, "Keine offenen Leads."),
@@ -2361,7 +2390,7 @@
   function renderKanban(box, all) {
     const warte = seitenText("abg", "Abgeschlossene");
     const spalten = KANBAN.map(k => {
-      const zu = LZU.includes(k.id), list = all.filter(l => !l.archiviert && k.st.includes(l.status)).sort(zu ? nachAenderung : nachEingang);
+      const zu = LZU.includes(k.id), list = all.filter(l => !l.archiviert && k.st.includes(l.status)).sort(zu ? nachAenderung : leadNachFrist);
       return el("section", { class: "kspalte", "data-spalte": k.id, style: `--c:${LSTAND_FARBE[k.id]}`, "aria-labelledby": `ksp-${k.id}`,
           ondragover: (ev) => kUeber(ev), ondragleave: (ev) => { if (!ev.currentTarget.contains(ev.relatedTarget)) ev.currentTarget.classList.remove("ueber"); },
           ondrop: (ev) => kAblegen(ev, k.id) },
@@ -2406,7 +2435,8 @@
       if (!gleicheSitzung(sg)) return;
       if (res.data.length) {
         if (daten.termin_id) { if (offenerTermin(id) === daten.termin_id) terminOffen.delete(id); } else terminVonHand(id);
-        putLead(res.data[0]); toast(`„${kurz(l.kunde, 40)}“: ${k.titel}`); return;
+        const d = res.data[0];
+        putLead(d); toast(`„${kurz(l.kunde, 40)}“: ${d.status === "kontaktiert" && d.versuch_nr ? `${d.versuch_nr}. Kontaktversuch` : k.titel}`); return;
       }
       // Inzwischen geändert oder gelöscht: neuen Stand zeigen, nichts überschreiben
       const now = await sb.from(LT).select(LCOLS).eq("id", id).maybeSingle();
@@ -2428,9 +2458,9 @@
     leadBadge();
     if (state.tab === "leads") {
       leadZaehler();
-      document.querySelectorAll('#leadList :is(.lrow, .kkarte)[data-status="neu"]').forEach(r => {
+      document.querySelectorAll('#leadList :is(.lrow, .kkarte):is([data-status="neu"], [data-status="kontaktiert"])').forEach(r => {
         const l = state.leads.get(r.dataset.lid), n = r.querySelector(".lf");
-        if (!l || !n || l.status !== "neu") return;
+        if (!l || !n || l.status !== r.dataset.status) return;
         const f = fristInhalt(l); n.className = "lf " + f.cls; fill(n, f.kids);
       });
     }
@@ -2536,37 +2566,42 @@
     $("l-kunde").autofocus = !ro && !l;
     $("leadCancel").autofocus = ro || !!l;
     oeffne(leadDlg);
-    // Der Fokus auf „Abbrechen“ (unten) schiebt ein langes Fenster auf dem Handy nach oben: Stand und „Kontakt erreicht“ sollen sichtbar sein
+    // Der Fokus auf „Abbrechen“ (unten) schiebt ein langes Fenster auf dem Handy nach oben: Stand und „Nicht erreicht“ sollen sichtbar sein
     leadDlg.scrollTop = 0;
     if (datei) nimmBild(datei);
   }
-  // Stand oben im Fenster: Frist oder wann und von wem erreicht, dazu der nächste Schritt
+  // Stand oben im Fenster: Frist (nicht bearbeitet, nach einem Kontaktversuch) oder wann und von wem erreicht, dazu der nächste Schritt
   function renderLeadStand() {
     const box = $("leadStand"), l = lEdit && state.leads.get(lEdit);
     if (!l) { box.hidden = true; fill(box); return; }
-    const arch = !!l.archiviert, ro = !state.canWrite || arch, f = l.status === "neu" && !arch ? frist(l) : null, busy = lBusy === lGen;
+    const arch = !!l.archiviert, ro = !state.canWrite || arch, f = anrufen(l) ? frist(l) : null, busy = lBusy === lGen, v = versuch(l);
     const fokus = box.contains(document.activeElement) ? document.activeElement.id : "";
     box.hidden = false; box.dataset.s = arch ? "arch" : f ? f.cls : l.status;
     const amVon = (was, am, von) => am ? `${was} am ${fmtWhen(am)}${von ? " von " + von : ""}` : "";
     const erreicht = amVon("Erreicht", l.kontaktiert_am, l.kontaktiert_von), termin = l.status === "erledigt" && terminText(l, true);
     const titel = arch ? `Archiviert, Stand: ${LSTAND[l.status] || l.status}` : { neu: "Nicht bearbeitet", reklamiert: "Reklamiert", rueckfrage: "Rückfragen offen", meeting: "Online-Meeting notwendig",
-      kontaktiert: "Kontaktiert, Termin offen", erledigt: termin ? "Erledigt, Termin festgelegt" : "Erledigt" }[l.status] || LSTAND[l.status] || "";
+      kontaktiert: "Kontaktversuch, kein Termin", erledigt: termin ? "Erledigt, Termin festgelegt" : "Erledigt" }[l.status] || LSTAND[l.status] || "";
+    // Bis wann: 24 Stunden ab Eingang bzw. ab dem letzten Kontaktversuch
+    const bis = f && (f.cls === "ueber" ? `Frist ${f.text}` : `${f.text}, bis ${fmtEin(new Date(fristAb(l) + TAG_MS).toISOString())}`);
+    const vorher = v && v.nr ? `${v.nr === 1 ? "1 Kontaktversuch" : `${v.nr} Kontaktversuche`} ohne Erfolg, zuletzt ${fmtWhen(v.am)}${v.von ? " von " + v.von : ""}` : "";
     const zeilen = arch ? [amVon("Archiviert", l.archiviert_am, l.archiviert_von), LGRUND.includes(l.status) && l.grund ? el("span", { class: "sgrund" }, l.grund) : null,
         termin ? "Termin am " + termin : null, "Nur zu lesen. „Zurückholen“ macht ihn wieder bearbeitbar."]
-      : f ? [f.cls === "ueber" ? `Frist ${f.text}` : `${f.text}, bis ${fmtEin(new Date(tsOf(l.eingang) + TAG_MS).toISOString())}`]
+      : f && l.status === "kontaktiert" ? [amVon(`${v.nr || 1}. Kontaktversuch`, v.am, v.von), `${(v.nr || 1) + 1}. Versuch: ${bis}`]
+      : f ? [bis]
       : LGRUND.includes(l.status) ? [el("span", { class: "sgrund" }, l.grund || ""), amVon(LSTAND[l.status], l.grund_am, l.grund_von)]
       : termin ? [el("span", { class: "sgrund" }, "Termin am " + termin), amVon("Festgelegt", l.termin_festgelegt_am, l.termin_von)]
-      : [erreicht || (l.status === "erledigt" ? "Ohne Kontakt abgeschlossen" : "")];
+      : [erreicht || (l.status === "erledigt" ? "Ohne Kontakt abgeschlossen" : ""), LGESPRAECH.includes(l.status) ? vorher : ""];
     if (!arch && l.status === "erledigt" && l.grund) zeilen.push(`${LSTAND[l.grund_stand] || "Begründung"}: ${l.grund}`);
     const knopf = (id, cls, onclick, ...kids) => el("button", { class: "btn small" + cls, type: "button", id, disabled: busy, onclick }, ...kids);
     const knoepfe = [];
-    if (!ro && l.status === "neu") knoepfe.push(knopf("leadKontakt", " primary", kontaktErreicht, svgCheck(), "Kontakt erreicht"));
-    if (!ro && LGESPRAECH.includes(l.status)) knoepfe.push(knopf("leadTermin", " primary", terminEintragen, svgPlus(), "Termin eintragen"));
-    if (!ro && (l.status === "neu" || LGESPRAECH.includes(l.status))) knoepfe.push(knopf("leadRekl", "", () => grundZeigen("reklamiert"), svgRekl(), "Reklamieren"));
+    if (!ro && LOFFEN.includes(l.status)) knoepfe.push(knopf("leadTermin", " primary", terminEintragen, svgPlus(), "Termin eintragen"));
+    if (!ro && anrufen(l)) knoepfe.push(knopf("leadNicht", "", nichtErreicht, svgUhr(), "Nicht erreicht"));
+    if (!ro && LOFFEN.includes(l.status)) knoepfe.push(knopf("leadRekl", "", () => grundZeigen("reklamiert"), svgRekl(), "Reklamieren"));
     // Hat jemand anders den Lead inzwischen entschieden (oder ist er archiviert), schließt die Terminauswahl
     if (!$("l-terminFeld").hidden && (ro || !leadVerknuepfbar(l))) { lTerminNr++; $("l-terminFeld").hidden = true; fill($("l-termin")); $("l-terminKurz").hidden = true; }
     if (!ro && leadVerknuepfbar(l) && $("l-terminFeld").hidden) knoepfe.push(knopf("leadVerkn", "", () => terminWahl(), svgKal(), "Vorhandener Termin"));
     if (termin && !arch) knoepfe.push(knopf("leadZumTermin", "", zumTermin, svgKal(), "Zum Termin"));
+    if (termin && !ro && l.termin_id) knoepfe.push(knopf("leadTerminAendern", "", terminAendern, svgEdit(), "Termin ändern"));
     if (arch && state.canWrite) knoepfe.push(knopf("leadZurueck", " primary", () => archivieren(false), svgArch(), "Zurückholen"));
     fill(box,
       el("span", { class: "lsi", "aria-hidden": "true" }, arch ? svgArch() : f ? svgUhr() : LGRUND.includes(l.status) ? GSVG[l.status]()
@@ -2584,7 +2619,7 @@
     lStatusAuf = status; syncGrund();
   }
   // Während des Speicherns oder Löschens: Knöpfe und Screenshot gesperrt (was gespeichert wird, steht fest)
-  function lSperre(on) { for (const id of ["leadSave", "leadDel", "leadArch", "leadKontakt", "leadTermin", "leadRekl", "leadZumTermin", "leadZurueck", "leadVerkn", "lTerminOk"]) { const b = $(id); if (b) b.disabled = on; } renderBild(); }
+  function lSperre(on) { for (const id of ["leadSave", "leadDel", "leadArch", "leadNicht", "leadTermin", "leadRekl", "leadZumTermin", "leadTerminAendern", "leadZurueck", "leadVerkn", "lTerminOk"]) { const b = $(id); if (b) b.disabled = on; } renderBild(); }
   // Weicht das Formular vom gespeicherten Lead ab? Ein gerade gewählter Screenshot, der noch verkleinert wird, zählt mit.
   // l: der Stand, mit dem verglichen wird (sonst der gespeicherte Lead)
   function lGeaendert(l = lEdit && state.leads.get(lEdit)) {
@@ -2594,11 +2629,19 @@
       || eineZeile($("l-quelle").value) !== (l.quelle || "")
       || (LGRUND.includes(lStatusWahl()) && eineZeile($("l-grund").value) !== lGrundAuf);
   }
-  // „Kontakt erreicht“ speichert das Formular mit dem Stand „kontaktiert“; das Fenster bleibt offen für „Termin eintragen“
-  async function kontaktErreicht() {
-    const g = lGen;
-    // Nur im selben Fenster melden: kam die Antwort spät, ist vielleicht schon ein anderer Lead offen
-    if (await speichern({ status: "kontaktiert", bleib: true }) && g === lGen && leadDlg.open) { toast("Kontakt gespeichert"); $("leadTermin")?.focus({ preventScroll: true }); }
+  // „Nicht erreicht“: zählt einen Kontaktversuch (Stand „Kontaktversuch, kein Termin“) und speichert das Formular mit; ab jetzt
+  // 24 Stunden bis zum nächsten Versuch. Die Seite schickt die nächste Nummer mit (wie die Datenbank sie zählt, ältere „kontaktiert“
+  // als 1. Versuch): zweimal gedrückt oder zwei Fenster zählen so nur einmal.
+  // Ging die Antwort auf „Nicht erreicht“ verloren, ist offen, ob der Versuch schon zählt: das nächste Drücken in diesem Fenster
+  // schickt dieselbe Nummer noch einmal und gilt als gespeichert, wenn die Datenbank ihn schon hat (sonst zählte ein Anruf doppelt).
+  let lVersuchOffen = null;
+  function nichtErreicht() {
+    const l = lEdit && state.leads.get(lEdit);
+    if (!l) return;
+    const offen = lVersuchOffen && lVersuchOffen.g === lGen && lVersuchOffen.id === lEdit ? lVersuchOffen.nr : 0;
+    const nr = offen || (l.versuch_nr || (l.status === "kontaktiert" && l.kontaktiert_am ? 1 : 0)) + 1;
+    speichern({ status: "kontaktiert", versuch: nr,
+      meldung: (d) => `${d.versuch_nr || nr}. Kontaktversuch gespeichert. Nächster bis ${fmtEin(new Date(fristAb(d) + TAG_MS).toISOString())}` });
   }
   // Ungespeicherte Änderungen erst speichern, dann in den Kalender: neuer Kundentermin mit Name, Art und Notiz
   async function terminEintragen() {
@@ -2620,6 +2663,31 @@
     if (l.notiz) $("f-note").value = l.notiz.slice(0, 1000);
     terminLead = { id: l.id, frei: leadFrei(l) };
     syncLeadField();
+  }
+  // Erledigter Lead mit festgelegtem Termin: den Termin gleich zum Bearbeiten öffnen (ungespeicherte Änderungen vorher speichern).
+  // Liegt er außerhalb der geladenen Monate, holt die Seite ihn einzeln. Verschoben zieht der Lead Tag und Uhrzeit von selbst nach.
+  async function terminAendern() {
+    const g = lGen, id = lEdit, sg = sitzGen;
+    if (lGeaendert() && !(await speichern({ bleib: true }))) return;
+    const l = state.leads.get(id), tid = l && l.termin_id;
+    if (g !== lGen || !leadDlg.open || !tid || !gleicheSitzung(sg)) return;
+    if (!state.events.has(tid)) {
+      lBusy = g; lSperre(true);
+      let fehl = false;
+      try {
+        const r = await sb.from(T).select(COLS).eq("id", tid).maybeSingle(); check(r);
+        if (r.data && gleicheSitzung(sg)) putRow(r.data);
+      } catch (e) { if (projFail(e, sg)) return; fehl = true; } finally { if (lBusy === g) { lBusy = -1; if (g === lGen) lSperre(false); } }
+      if (g !== lGen || !leadDlg.open || !gleicheSitzung(sg)) return;
+      // Ohne Antwort weiß die Seite nicht, ob es ihn noch gibt: dann nicht „vielleicht gelöscht“ sagen
+      if (fehl) { $("leadErr").textContent = "Der Termin ließ sich nicht laden. Prüfe die Verbindung und versuche es erneut."; return; }
+      if (!state.events.has(tid)) { $("leadErr").textContent = "Der Termin ließ sich nicht öffnen. Vielleicht wurde er gelöscht; bitte im Kalender nachsehen."; return; }
+    }
+    const e = state.events.get(tid);
+    leadDlg.close();
+    state.selected = e.date; state.cursor = parse(e.date);
+    if (state.tab !== "kalender") setTab("kalender"); else render();
+    openEditor(tid);
   }
   // Erledigter Lead mit festgelegtem Termin: zum Tag im Kalender (ungespeicherte Änderungen vorher speichern)
   async function zumTermin() {
@@ -2810,7 +2878,7 @@
   }
   // Stände, aus denen ein Termin den Lead von selbst erledigt: die offenen und der, den er beim Start des Termins hatte.
   // Hat ihn inzwischen jemand anders entschieden (reklamiert, storniert, verloren, archiviert), bleibt das stehen.
-  const leadFrei = (l) => [...new Set(["neu", ...LGESPRAECH, l.status])].filter((s) => s !== "erledigt");
+  const leadFrei = (l) => [...new Set([...LOFFEN, l.status])].filter((s) => s !== "erledigt");
   // Termin aus dem Lead gespeichert: Lead erledigt (nur aus den Ständen in frei und nicht archiviert). Die Datenbank übernimmt
   // dazu Datum und Uhrzeit des Termins und trägt ein, wer ihn wann festgelegt hat.
   // nachgeholt: zweiter Versuch nach Verbindungsabbruch (still, nur der Erfolg wird gemeldet)
@@ -2865,6 +2933,7 @@
     if (projFail(e, sg)) return "";
     if (e && e.bild) return e.bild;
     if (e && e.code === "23514" && /Begründung fehlt/.test(e.message || "")) return "Für diesen Stand fehlt eine neue Begründung. Bitte eintragen und noch einmal speichern.";
+    if (e && e.code === "23514" && /Kontaktversuch passt nicht/.test(e.message || "")) return "Der Kontaktversuch passt nicht zum gespeicherten Stand (vielleicht hat ihn gerade jemand anders eingetragen). Bitte „Abbrechen“ und den Lead neu öffnen.";
     if (e && (e.code === "23514" || e.code === "22001")) return "Ein Feld ist ungültig oder zu lang. Kunde bis 80, Leadquelle bis 60, Notiz bis 1000, Begründung bis 500 Zeichen; der Eingang darf nicht in der Zukunft liegen.";
     if (e && e.code === "42501") return "Keine Berechtigung. Lade die Seite neu und versuche es noch einmal.";
     if (e && e.code === "23503") return "Der Termin zu diesem Lead wurde inzwischen gelöscht oder durchgestrichen. Bitte noch einmal speichern.";
@@ -2908,7 +2977,8 @@
       ok = !r.error && !d.error;
     } catch {} finally { const u = lAufr.get(id); if (u) { if (ok) lAufr.delete(id); else u.laeuft = false; } }
   }
-  // opt.status: Stand erzwingen (Kontakt erreicht); opt.archiv: archivieren bzw. zurückholen; opt.bleib: Fenster offen lassen.
+  // opt.status: Stand erzwingen (Nicht erreicht) mit opt.versuch: Nummer des Kontaktversuchs; opt.archiv: archivieren bzw. zurückholen;
+  // opt.bleib: Fenster offen lassen; opt.meldung(d): Meldung nach dem Speichern statt „Lead gespeichert“.
   // Ergebnis: true, wenn gespeichert (oder nichts zu tun)
   async function speichern(opt = {}) {
     if (!state.canWrite || !sb || lBusy === lGen) return false;
@@ -2945,6 +3015,7 @@
     // Begründung nur bei reklamiert, storniert und verloren und wenn sie neu oder geändert ist
     if (edit && LGRUND.includes(st) && (grund !== lGrundAuf || st !== lStatusAuf)) daten.grund = grund;
     if (edit && typeof opt.archiv === "boolean") daten.archiviert = opt.archiv;
+    if (edit && opt.versuch) daten.versuch_nr = opt.versuch;
     // Von Hand erledigt, nachdem der Lead nach „Termin eintragen“ nicht nachziehen konnte: der Termin geht mit
     if (edit && daten.status === "erledigt" && offenerTermin(edit) && offenerTermin(edit) !== (l0 && l0.termin_id)) daten.termin_id = offenerTermin(edit);
     const b = lBild, bildAlt = lBildAlt;
@@ -2956,6 +3027,7 @@
     lBusy = g; lSperre(true); $("leadErr").textContent = "";
     let ok = false;
     const pfad = b.art === "neu" ? b.pfad : null;
+    let soll = null;
     try {
       if (pfad) {
         lInFlug.add(pfad);
@@ -2964,13 +3036,26 @@
         daten.bild = pfad;
       }
       if (!gleicheSitzung(sg)) return false;
+      // Wie der Lead nach diesem Speichern dastehen soll, auch mit den Feldern, die nur geändert mitgehen (für „Nicht erreicht“ nach Funkloch)
+      soll = { kunde, art, notiz: notiz || null, quelle: quelle || null, eingang: einV, bild: "bild" in daten ? daten.bild : bildAlt };
       let d;
       if (edit) {
         const res = await sb.from(LT).update(daten).eq("id", edit).eq("updated_at", stamp).select(LCOLS);
         check(res);
         if (!gleicheSitzung(sg)) return false;
-        if (!res.data.length) { await lKonflikt(edit, g, sg, kunde); return false; }
         d = res.data[0];
+        const offen = lVersuchOffen;
+        if (!d && opt.versuch && offen && offen.g === g && offen.id === edit) {
+          const v = await versuchDa(edit, daten.versuch_nr, sg, soll, offen.solls);
+          if (!gleicheSitzung(sg)) return false;
+          // Der eigene Versuch steht schon, das Fenster aber nicht so, wie es gespeichert ist
+          if (v && v.rest) { await lKonflikt(edit, g, sg, kunde, v); return false; }
+          d = v;
+        }
+        if (!gleicheSitzung(sg)) return false;
+        if (!d) { await lKonflikt(edit, g, sg, kunde); return false; }
+        // Gespeichert: das Fenster kennt jetzt den Stand, eine offene Nummer gilt nicht mehr
+        lVersuchOffen = null;
       } else {
         d = await lAnlegen(daten, g, sg, b, neuId);
         if (!d) return false;
@@ -2983,17 +3068,23 @@
       // Ersetzter oder entfernter Screenshot: Datei löschen (kein Lead zeigt mehr darauf)
       if (edit && "bild" in daten && bildAlt && bildAlt !== (d.bild || null)) bilderWeg([bildAlt], sg);
       afterLeads();
-      if (!hier()) { if (gleicheSitzung(sg)) toast(`„${kurz(kunde, 40)}“ ${edit ? "gespeichert" : "angelegt"}`); return true; }
+      if (!hier()) { if (gleicheSitzung(sg)) toast(edit && opt.meldung ? `„${kurz(kunde, 40)}“: ${opt.meldung(d)}` : `„${kurz(kunde, 40)}“ ${edit ? "gespeichert" : "angelegt"}`); return true; }
       if (opt.bleib && edit) { lAktuell(d, b); return true; }
       leadDlg.close();
       if (!edit && state.lfilter !== "offen") { state.lfilter = "offen"; if (state.tab === "leads") renderLeads(); }
-      toast(edit ? "Lead gespeichert" : "Lead angelegt");
+      toast(edit ? (opt.meldung ? opt.meldung(d) : "Lead gespeichert") : "Lead angelegt");
       return true;
     } catch (e) {
       // Ging nur die Antwort verloren, zeigt der Lead vielleicht schon aufs neue Bild: das alte dann wegräumen (bilderWeg sieht vorher nach)
       if (edit && "bild" in daten && bildAlt) { if (g === lGen) lOffen.add(bildAlt); else bilderWeg([bildAlt], sg); }
       // Der mitgeschickte Termin ist inzwischen gelöscht oder durchgestrichen: beim nächsten Speichern ohne ihn
       if (e && e.code === "23503" && daten.termin_id && offenerTermin(edit) === daten.termin_id) terminOffen.delete(edit);
+      // Ohne Antwort der Datenbank (Funkloch): vielleicht zählt der Versuch schon, siehe nichtErreicht
+      // Alle so verlorenen Fassungen mit derselben Nummer merken: angekommen sein kann jede von ihnen
+      if (edit && opt.versuch && !(e && e.code) && g === lGen && gleicheSitzung(sg)) {
+        const alt = lVersuchOffen && lVersuchOffen.g === g && lVersuchOffen.id === edit && lVersuchOffen.nr === opt.versuch ? lVersuchOffen.solls : [];
+        lVersuchOffen = { g, id: edit, nr: opt.versuch, solls: [...alt, soll] };
+      }
       const m = leadWriteError(e, sg);
       if (m && hier()) $("leadErr").textContent = m; else if (m && gleicheSitzung(sg)) toast(nichtText(kunde, edit ? "gespeichert" : "angelegt", m), 7000);
       return false;
@@ -3027,10 +3118,31 @@
     $("leadStamp").textContent = `Geändert ${fmtStamp(d.updated_at)}`;
     lModus(); zeigeAlt(); renderLeadStand();
   }
-  // Speichern traf auf eine neuere Fassung (oder der Lead ist weg)
-  async function lKonflikt(id, g, sg, kunde) {
-    const hier = () => g === lGen && leadDlg.open && gleicheSitzung(sg);
+  // „Nicht erreicht“ ein zweites Mal nach verlorener Antwort: Steht der Versuch mit dieser Nummer schon in der Datenbank, und zwar
+  // von dieser Person (beim Team-Zugang lässt sich das nicht unterscheiden), ist es der eigene. Ergebnis: die Zeile, wenn auch der
+  // Rest so dasteht, wie das Fenster ihn speichern will (soll); sonst { rest: Zeile, fremd }: fremd, wenn die Zeile nicht mehr so
+  // dasteht, wie eines der verlorenen Speichern sie hinterließ (solls), also jemand anderes etwas geändert hat. null, wenn der Versuch
+  // nicht der eigene ist oder nie ankam: die offene Nummer gilt dann nicht mehr, das nächste Drücken zählt vom gezeigten Stand weiter.
+  async function versuchDa(id, nr, sg, soll, solls) {
     const now = await sb.from(LT).select(LCOLS).eq("id", id).maybeSingle();
+    if (!gleicheSitzung(sg) || now.error || !now.data) return null;
+    const x = now.data;
+    if (x.status !== "kontaktiert" || x.versuch_nr !== nr) { lVersuchOffen = null; return null; }
+    // Wer bin ich: ohne Antwort von kalender_ich (oder umbenannt) erst nachfragen, die Verbindung steht ja gerade
+    // Für den Team-Zugang schreibt die Datenbank „Team-Zugang“ (privat.kalender_wer); zwei Geräte damit sind nicht zu unterscheiden
+    const ich = () => !state.me ? null : state.me.team ? "Team-Zugang" : state.me.name;
+    if (!state.me || (ich() && x.versuch_von !== ich())) { await checkMe(); if (!gleicheSitzung(sg)) return null; }
+    // Nur ein sicher fremder Name zählt als jemand anderes; ohne bekannte Person gilt der Versuch als der eigene
+    if (ich() && x.versuch_von !== ich()) { lVersuchOffen = null; return null; }
+    const wie = (s) => !!s && x.kunde === s.kunde && x.art === s.art && (x.notiz ?? null) === s.notiz && (x.quelle || null) === s.quelle
+      && lokal(new Date(tsOf(x.eingang))) === s.eingang && (x.bild || null) === s.bild;
+    return wie(soll) ? x : { rest: x, fremd: !solls.some(wie) };
+  }
+  // Speichern traf auf eine neuere Fassung (oder der Lead ist weg). versuch: Ergebnis von versuchDa, wenn der eigene
+  // Kontaktversuch schon steht, der Rest aber nicht so, wie das Fenster ihn zeigt
+  async function lKonflikt(id, g, sg, kunde, versuch) {
+    const hier = () => g === lGen && leadDlg.open && gleicheSitzung(sg);
+    const now = versuch ? { data: versuch.rest } : await sb.from(LT).select(LCOLS).eq("id", id).maybeSingle();
     if (!gleicheSitzung(sg)) return;
     if (now.error) throw now.error;
     if (!now.data) {
@@ -3041,11 +3153,19 @@
       return;
     }
     putLead(now.data); afterLeads();
-    if (!hier()) { toast(nichtText(kunde, "gespeichert", "Jemand hat ihn gerade geändert. Bitte öffnen und noch einmal speichern."), 7000); return; }
+    if (!hier()) {
+      toast(versuch ? `„${kurz(kunde, 40)}“: Kontaktversuch gespeichert, die übrigen Änderungen nicht. Bitte öffnen und noch einmal speichern.`
+        : nichtText(kunde, "gespeichert", "Jemand hat ihn gerade geändert. Bitte öffnen und noch einmal speichern."), 7000);
+      return;
+    }
     lStamp = now.data.updated_at; lStandBasis(now.data.status); lGrundBasis(now.data);
+    // Der eigene Versuch steht: der Eingang dort ist der des verlorenen Speicherns. Weicht das Feld davon ab, geht es mit.
+    if (versuch) lEingangAuf = lokal(new Date(tsOf(now.data.eingang)));
     // Screenshot inzwischen geändert: den neuen zeigen; eine eigene Auswahl (neues Bild) bleibt
     if ((now.data.bild || null) !== lBildAlt) { lBildAlt = now.data.bild || null; if (lBild.art === "weg" && !lBildAlt) lBild = { art: "alt" }; zeigeAlt(); }
-    $("leadErr").textContent = "Jemand hat diesen Lead gerade geändert. Abbrechen zeigt die neue Fassung, Speichern überschreibt sie mit deiner.";
+    $("leadErr").textContent = !versuch ? "Jemand hat diesen Lead gerade geändert. Abbrechen zeigt die neue Fassung, Speichern überschreibt sie mit deiner."
+      : versuch.fremd ? "Dein Kontaktversuch ist schon gespeichert. Jemand hat diesen Lead inzwischen geändert: Abbrechen zeigt die neue Fassung, Speichern überschreibt sie mit deiner."
+      : "Dein Kontaktversuch ist schon gespeichert, deine übrigen Änderungen noch nicht. Speichern speichert sie.";
   }
   // Neuer Lead mit selbst gewählter Kennung. Liefert die gespeicherte Zeile oder null (Meldung steht dann schon da).
   async function lAnlegen(daten, g, sg, b, id) {
@@ -3134,7 +3254,7 @@
     if (lBild.art === "neu") URL.revokeObjectURL(lBild.url);
     if (lAnz && lAnz.url) URL.revokeObjectURL(lAnz.url);
     lBild = { art: "alt" }; lAnz = null; lBildAlt = null;
-    lEdit = lStamp = lNeuId = null; lEingangAuf = ""; lGrundAuf = ""; $("l-grundFeld").hidden = true; disarm($("leadDel")); disarm($("leadArch"));
+    lEdit = lStamp = lNeuId = null; lEingangAuf = ""; lGrundAuf = ""; lVersuchOffen = null; $("l-grundFeld").hidden = true; disarm($("leadDel")); disarm($("leadArch"));
     // Wer eingetragen hat und die benutzten Leadquellen stehen nur, solange der Lead offen ist
     $("l-angelegt").hidden = true; $("l-angelegt").textContent = ""; $("l-quellen").replaceChildren();
     lTerminNr++; $("l-terminFeld").hidden = true; fill($("l-termin"));
@@ -3317,8 +3437,10 @@
   // updated_at, das nur eine echte Änderung setzt), oder wenn seine Wiedervorlage da ist.
   // Vermerke hängt die Datenbank mit Datum und Name an den Verlauf; die Seite schickt nur den neuen Text (Spalte vermerk).
   // Geladen werden die offenen Einträge (für die Zahl am Reiter), die erledigten seitenweise erst, wenn die Liste sie zeigt.
+  // Eine eskalierte Nacharbeit steht, solange sie offen ist, nur im Reiter Eskalation und wird schon nach einem Tag rot.
+  // Eskalieren darf jeder mit Zugang, aufheben nur ein Verwalter; wann und von wem, schreibt die Datenbank.
   const NT = "kalender_nacharbeiten";
-  const NCOLS = "id,titel,kunde,art,status,zustaendig,vorgang,wiedervorlage,notiz,verlauf,bearbeitet_von,updated_at";
+  const NCOLS = "id,titel,kunde,art,status,zustaendig,vorgang,wiedervorlage,notiz,verlauf,eskaliert,eskaliert_am,eskaliert_von,bearbeitet_von,updated_at";
   const nachDlg = $("nachDlg");
   // Live-Änderungen während einer laufenden Abfrage (Kennung → Zeile oder null für gelöscht) und die gelöschten dieser Anmeldung
   let nachSeq = 0, nTouched = new Map(), nWeg = new Set(), nachRetryT = null, nachRetryMs = 5000, nachT = null;
@@ -3327,6 +3449,7 @@
   // Abo des Kanals war zwischendurch gestört: bei der nächsten Erfolgsmeldung nachladen
   const nLuecke = new WeakSet();
   const svgWarte = () => svg("M5 2.5h6M5 13.5h6M5.5 2.5c0 3 5 3.2 5 5.5s-5 2.5-5 5.5M10.5 2.5c0 3-5 3.2-5 5.5s5 2.5 5 5.5");
+  const svgEsk = () => svg("M8 13V3.5M4 7.5l4-4 4 4");
 
   function applyNach(r) {
     if (nWeg.has(r.id)) return;
@@ -3341,8 +3464,9 @@
     if (isLocked()) return;
     if (nachDlg.open && nEdit && nEdit !== nLoescht && nWeg.has(nEdit)) { nachDlg.close(); toast("Diese Nacharbeit wurde gerade von jemand anderem gelöscht"); }
     else if (nachDlg.open) { const n = nEdit && state.nach.get(nEdit); if (n) { if (n.status !== nStatusAuf) nStandBasis(n.status); nVerlaufZeigen(n); } renderNachStand(); }
-    nachBadge();
+    nachBadge(); eskBadge();
     if (state.tab === "nacharbeiten") renderNach();
+    else if (state.tab === "eskalation") renderEsk();
   }
   // Mehrere Anlässe kurz hintereinander (Beitritt, Abo-Meldung, Netz zurück): nur einmal laden
   function nachBald() { clearTimeout(nachT); if (sb && !isLocked()) nachT = setTimeout(loadNach, 300); }
@@ -3370,7 +3494,7 @@
     } catch (e) {
       if (seq !== nachSeq || projFail(e)) return;
       // Später erneut versuchen, mit wachsendem Abstand; der Rest der Seite läuft davon unabhängig weiter
-      state.nachErr = true; if (state.tab === "nacharbeiten") renderNach();
+      state.nachErr = true; if (state.tab === "nacharbeiten") renderNach(); else if (state.tab === "eskalation") renderEsk();
       nachRetryT = setTimeout(loadNach, nachRetryMs); nachRetryMs = Math.min(nachRetryMs * 2, 120000);
     }
   }
@@ -3397,15 +3521,21 @@
 
   // ---------- Übersicht (Reiter Nacharbeiten) ----------
   const wvDa = (n) => !!n.wiedervorlage && n.wiedervorlage <= ymd(new Date());
-  const nachRot = (n) => n.status !== "erledigt" && (wvDa(n) || Date.now() - tsOf(n.updated_at) >= WOCHE_MS);
+  // Ohne Änderung rot nach einer Woche, eskaliert schon nach einem Tag
+  const nFrist = (n) => n.eskaliert ? TAG_MS : WOCHE_MS;
+  const nachRot = (n) => n.status !== "erledigt" && (wvDa(n) || Date.now() - tsOf(n.updated_at) >= nFrist(n));
+  // Offen und eskaliert: steht im Reiter Eskalation statt unter Nacharbeiten
+  const eskOffen = (n) => n.status !== "erledigt" && !!n.eskaliert;
   // Kalendertage seit der letzten Änderung (heute 0, gestern 1)
   const tageSeit = (iso) => { const t = new Date(tsOf(iso)); return isNaN(t) ? 0 : Math.max(0, Math.round((parse(ymd(new Date())) - parse(ymd(t))) / TAG_MS)); };
+  // „seit 3 Tagen“; eskalierte werden schon nach einem Tag rot
+  const seitTagen = (t) => t <= 1 ? "seit einem Tag" : `seit ${t} Tagen`;
   const dmK = (s) => { const d = parse(s); return `${DOW[dowIdx(d)]} ${d.getDate()}.${d.getMonth() + 1}.${d.getFullYear() !== new Date().getFullYear() ? d.getFullYear() : ""}`; };
   function nachFrist(n) {
     if (n.status === "erledigt") return { cls: "erl", kids: [svgCheck(), "erledigt " + fmtTag(n.updated_at)] };
     const tage = tageSeit(n.updated_at);
     if (wvDa(n)) return { cls: "ueber", wv: true, kids: [svgUhr(), n.wiedervorlage === ymd(new Date()) ? "Wiedervorlage heute" : `Wiedervorlage seit ${dmK(n.wiedervorlage)}`] };
-    if (nachRot(n)) return { cls: "ueber", kids: [svgUhr(), `seit ${tage} Tagen unbearbeitet`] };
+    if (nachRot(n)) return { cls: "ueber", kids: [svgUhr(), `${seitTagen(tage)} unbearbeitet`] };
     return { cls: n.status === "wartet" ? "wartet" : "frei", kids: [n.status === "wartet" ? svgWarte() : svgUhr(),
       tage === 0 ? "heute bearbeitet" : tage === 1 ? "gestern bearbeitet" : `vor ${tage} Tagen bearbeitet`] };
   }
@@ -3417,39 +3547,65 @@
   function nachBadge() {
     const b = $("nachTabCnt");
     let rot = 0;
-    if (state.nachLoaded && !isLocked()) { for (const n of state.nach.values()) if (nachRot(n)) rot++; nRotSig = nSig(); }
+    if (state.nachLoaded && !isLocked()) { for (const n of state.nach.values()) if (nachRot(n) && !n.eskaliert) rot++; nRotSig = nSig(); }
     b.hidden = !rot; b.textContent = rot ? String(rot) : "";
     $("tab-nacharbeiten").setAttribute("aria-label", rot ? `Nacharbeiten, ${rot} überfällig` : "Nacharbeiten");
   }
-  function nachZaehler() {
-    if (!state.nachLoaded) { $("nachCount").textContent = ""; return; }
-    let offen = 0, wartet = 0, rot = 0;
-    for (const n of state.nach.values()) { if (n.status === "offen") offen++; else if (n.status === "wartet") wartet++; if (nachRot(n)) rot++; }
-    $("nachCount").textContent = [`${offen} offen`, wartet ? `${wartet} wartet` : null, rot ? `${rot} überfällig` : null].filter(Boolean).join(" · ");
+  // Zahl der offenen Eskalationen am Reiter: Bernstein, rot sobald eine überfällig ist
+  function eskBadge() {
+    const b = $("eskTabCnt");
+    let n = 0, rot = 0;
+    if (state.nachLoaded && !isLocked()) for (const x of state.nach.values()) if (eskOffen(x)) { n++; if (nachRot(x)) rot++; }
+    b.hidden = !n; b.textContent = n ? String(n) : ""; b.classList.toggle("ueber", rot > 0);
+    $("tab-eskalation").setAttribute("aria-label", n ? `Eskalation, ${n} offen${rot ? `, davon ${rot} überfällig` : ""}` : "Eskalation");
   }
-  function nachRow(n) {
+  function nachZaehler(esk) {
+    const box = $(esk ? "eskCount" : "nachCount");
+    if (!state.nachLoaded) { box.textContent = ""; return; }
+    let offen = 0, wartet = 0, rot = 0;
+    for (const n of state.nach.values()) {
+      if (n.status === "erledigt" || !!n.eskaliert !== !!esk) continue;
+      if (n.status === "offen") offen++; else if (n.status === "wartet") wartet++;
+      if (nachRot(n)) rot++;
+    }
+    box.textContent = [`${offen} offen`, wartet ? `${wartet} wartet` : null, rot ? `${rot} überfällig` : null].filter(Boolean).join(" · ");
+  }
+  // esk: Zeile im Reiter Eskalation (dort steht statt des Kennzeichens, wann und von wem eskaliert wurde)
+  function nachRow(n, esk) {
     const f = nachFrist(n);
     const meta = [n.kunde, n.zustaendig ? "Zuständig: " + n.zustaendig : null, n.vorgang ? "Nr. " + n.vorgang : null,
-      n.status !== "erledigt" && n.wiedervorlage && !f.wv ? "Wiedervorlage " + dmK(n.wiedervorlage) : null].filter(Boolean).join(" · ");
+      n.status !== "erledigt" && n.wiedervorlage && !f.wv ? "Wiedervorlage " + dmK(n.wiedervorlage) : null,
+      esk && n.eskaliert_am ? `Eskaliert ${fmtTag(n.eskaliert_am)}${n.eskaliert_von ? " von " + n.eskaliert_von : ""}` : null].filter(Boolean).join(" · ");
     return el("button", { class: "lrow nrow", type: "button", "data-nid": n.id, "data-status": n.status, "data-rot": f.cls === "ueber" ? "" : null, onclick: () => openNach(n.id) },
-      el("span", { class: "lt" }, el("span", { class: "ltn" }, n.titel), el("span", { class: "badge lart", title: nachArtLabel(n.art) }, nachArt(n.art).kurz)),
+      el("span", { class: "lt" }, el("span", { class: "ltn" }, n.titel), el("span", { class: "badge lart", title: nachArtLabel(n.art) }, nachArt(n.art).kurz),
+        n.eskaliert && !esk ? el("span", { class: "badge esk", title: "Eskaliert" }, "Eskaliert") : null),
       el("span", { class: "lm" }, meta ? el("span", { class: "ln" }, meta) : null),
       el("span", { class: "lf " + f.cls }, f.kids),
       svgNext());
   }
   document.querySelectorAll("#nachSeg button").forEach(b => b.addEventListener("click", () => { state.nfilter = b.dataset.nst; renderNach(); }));
+  // Noch nicht geladen: Hinweis oder (nach einem Fehler) „Erneut versuchen“. Ergebnis true, wenn es nichts zu zeigen gibt.
+  function nachLaedt(box, was, neu) {
+    box.setAttribute("aria-busy", String(!state.nachLoaded));
+    if (state.nachLoaded) return false;
+    box.replaceChildren(state.nachErr
+      ? el("div", { class: "empty" }, el("span", null, `${was} konnten nicht geladen werden.`),
+          el("button", { class: "btn", type: "button", onclick: () => { state.nachErr = false; neu(); loadNach(); } }, "Erneut versuchen"))
+      : el("div", { class: "empty" }, `${was} werden geladen …`));
+    return true;
+  }
+  // Offene nach Überfällig, Offen und Wartet auf Rückmeldung
+  function nachGruppen(offen, esk) {
+    const rot = offen.filter(nachRot), rest = offen.filter(n => !nachRot(n));
+    const gruppe = (titel, list) => list.length ? el("section", { class: "lgruppe" },
+      el("h3", null, titel, el("span", { class: "num" }, list.length)), el("ul", { class: "lrows" }, list.map(n => el("li", null, nachRow(n, esk))))) : null;
+    return [gruppe("Überfällig", rot), gruppe("Offen", rest.filter(n => n.status !== "wartet")), gruppe("Wartet auf Rückmeldung", rest.filter(n => n.status === "wartet"))];
+  }
   function renderNach() {
     const box = $("nachList"), f = state.nfilter;
     document.querySelectorAll("#nachSeg button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.nst === f)));
     nachZaehler();
-    box.setAttribute("aria-busy", String(!state.nachLoaded));
-    if (!state.nachLoaded) {
-      box.replaceChildren(state.nachErr
-        ? el("div", { class: "empty" }, el("span", null, "Nacharbeiten konnten nicht geladen werden."),
-            el("button", { class: "btn", type: "button", onclick: () => { state.nachErr = false; renderNach(); loadNach(); } }, "Erneut versuchen"))
-        : el("div", { class: "empty" }, "Nacharbeiten werden geladen …"));
-      return;
-    }
+    if (nachLaedt(box, "Nacharbeiten", renderNach)) return;
     // Neu zeichnen (Live-Änderung) behält den Tastaturfokus auf derselben Zeile
     const act = document.activeElement, fokus = act && box.contains(act) ? act.dataset.nid : null, y = scrollY;
     const all = [...state.nach.values()];
@@ -3470,22 +3626,33 @@
           if (state.tab === "nacharbeiten" && state.nfilter === "erledigt") $("nachList").querySelectorAll(".lrow")[alt]?.focus(); } },
           nerl.fehler ? "Erneut versuchen" : "Weitere laden")) : null);
     } else {
-      const offen = all.filter(n => n.status !== "erledigt").sort(nachAlter);
-      const rot = offen.filter(nachRot), rest = offen.filter(n => !nachRot(n));
-      const gruppe = (titel, list) => list.length ? el("section", { class: "lgruppe" },
-        el("h3", null, titel, el("span", { class: "num" }, list.length)), el("ul", { class: "lrows" }, list.map(n => el("li", null, nachRow(n))))) : null;
+      const offen = all.filter(n => n.status !== "erledigt" && !n.eskaliert).sort(nachAlter);
       if (!offen.length) box.replaceChildren(el("div", { class: "empty" }, el("span", null, "Keine offenen Nacharbeiten."),
         state.canWrite ? el("button", { class: "btn primary", type: "button", onclick: () => openNach(null) }, svgPlus(), "Neue Nacharbeit") : null));
-      else fill(box, gruppe("Überfällig", rot), gruppe("Offen", rest.filter(n => n.status !== "wartet")), gruppe("Wartet auf Rückmeldung", rest.filter(n => n.status === "wartet")));
+      else fill(box, nachGruppen(offen, false));
     }
+    if (fokus) box.querySelector(`.lrow[data-nid="${CSS.escape(fokus)}"]`)?.focus({ preventScroll: true });
+    if (fokus && scrollY !== y) scrollTo(scrollX, y);
+  }
+  // Reiter Eskalation: die offenen eskalierten Nacharbeiten (erledigte stehen unter Nacharbeiten, „Erledigt“)
+  function renderEsk() {
+    const box = $("eskList");
+    nachZaehler(true);
+    if (nachLaedt(box, "Eskalationen", renderEsk)) return;
+    const act = document.activeElement, fokus = act && box.contains(act) ? act.dataset.nid : null, y = scrollY;
+    const offen = [...state.nach.values()].filter(eskOffen).sort(nachAlter);
+    if (!offen.length) box.replaceChildren(el("div", { class: "empty" }, el("span", null, "Keine Eskalationen."),
+      el("span", { class: "esub" }, "Eine Nacharbeit kommt hierher, wenn jemand in ihr „Eskalieren“ wählt.")));
+    else fill(box, nachGruppen(offen, true));
     if (fokus) box.querySelector(`.lrow[data-nid="${CSS.escape(fokus)}"]`)?.focus({ preventScroll: true });
     if (fokus && scrollY !== y) scrollTo(scrollX, y);
   }
   // Jede Minute nachsehen, ob ein Eintrag rot geworden ist (oder ein neuer Tag begonnen hat); nur dann neu zeichnen
   function nachTick() {
     if (!state.nachLoaded || isLocked() || nSig() === nRotSig) return;
-    nachBadge();
+    nachBadge(); eskBadge();
     if (state.tab === "nacharbeiten") renderNach();
+    else if (state.tab === "eskalation") renderEsk();
     if (nachDlg.open) renderNachStand();
   }
   setInterval(nachTick, 60 * 1000);
@@ -3577,17 +3744,23 @@
     box.hidden = false; box.dataset.s = rot ? "ueber" : n.status;
     const wer = n.bearbeitet_von ? ` von ${n.bearbeitet_von}` : "";
     const zuletzt = `${erl ? "Erledigt" : "Zuletzt bearbeitet"} ${fmtWhen(n.updated_at)}${wer}`;
-    const info = erl ? zuletzt : wvDa(n) ? `Wiedervorlage ${n.wiedervorlage === ymd(new Date()) ? "heute" : "seit " + dmK(n.wiedervorlage)}. ${zuletzt}`
-      : rot ? `Seit ${tageSeit(n.updated_at)} Tagen nicht bearbeitet. ${zuletzt}`
-      : n.wiedervorlage && parse(n.wiedervorlage).getTime() < tsOf(n.updated_at) + WOCHE_MS ? `${zuletzt}. Wiedervorlage ${dmK(n.wiedervorlage)}, ab dann rot.`
-      : `${zuletzt}. Ohne Bearbeitung rot ab ${fmtStamp(new Date(tsOf(n.updated_at) + WOCHE_MS).toISOString())} Uhr.`;
+    const frist = nFrist(n);
+    const info0 = erl ? zuletzt : wvDa(n) ? `Wiedervorlage ${n.wiedervorlage === ymd(new Date()) ? "heute" : "seit " + dmK(n.wiedervorlage)}. ${zuletzt}`
+      : rot ? `${seitTagen(tageSeit(n.updated_at)).replace(/^s/, "S")} nicht bearbeitet. ${zuletzt}`
+      : n.wiedervorlage && parse(n.wiedervorlage).getTime() < tsOf(n.updated_at) + frist ? `${zuletzt}. Wiedervorlage ${dmK(n.wiedervorlage)}, ab dann rot.`
+      : `${zuletzt}. Ohne Bearbeitung rot ab ${fmtStamp(new Date(tsOf(n.updated_at) + frist).toISOString())} Uhr.`;
+    // Eskaliert: wann und von wem steht vorn, die Überschrift sagt es auch
+    const info = n.eskaliert && n.eskaliert_am ? `Eskaliert ${fmtWhen(n.eskaliert_am)}${n.eskaliert_von ? ` von ${n.eskaliert_von}` : ""}. ${info0}` : info0;
+    const titel = erl ? "Erledigt" : rot ? (n.status === "wartet" ? "Überfällig, wartet auf Rückmeldung" : "Überfällig") : NSTAND[n.status] || "Offen";
     fill(box,
       el("span", { class: "lsi", "aria-hidden": "true" }, erl ? svgCheck() : n.status === "wartet" && !rot ? svgWarte() : svgUhr()),
       el("span", { class: "lsx" },
-        el("strong", null, erl ? "Erledigt" : rot ? (n.status === "wartet" ? "Überfällig, wartet auf Rückmeldung" : "Überfällig") : NSTAND[n.status] || "Offen"),
+        el("strong", null, n.eskaliert ? `Eskaliert · ${titel}` : titel),
         el("span", null, info)),
       ro || erl ? null : el("span", { class: "lsacts" },
         el("button", { class: "btn small", type: "button", id: "nachTermin", disabled: busy, onclick: nTerminEintragen }, svgPlus(), "Termin eintragen"),
+        !n.eskaliert ? el("button", { class: "btn small eskbtn", type: "button", id: "nachEsk", disabled: busy, onclick: () => nSpeichern({ eskaliert: true }) }, svgEsk(), "Eskalieren")
+          : istVerwalter() ? el("button", { class: "btn small", type: "button", id: "nachEskAus", disabled: busy, onclick: () => nSpeichern({ eskaliert: false }) }, "Eskalation aufheben") : null,
         el("button", { class: "btn primary small", type: "button", id: "nachErledigt", disabled: busy, onclick: () => nSpeichern({ status: "erledigt" }) }, svgCheck(), "Erledigt")));
     if (fokus) $(fokus)?.focus({ preventScroll: true });
   }
@@ -3598,7 +3771,7 @@
     nStatusAuf = status;
   }
   // Während des Speicherns oder Löschens: Knöpfe gesperrt
-  function nSperre(on) { for (const id of ["nachSave", "nachDel", "nachTermin", "nachErledigt"]) { const b = $(id); if (b) b.disabled = on; } }
+  function nSperre(on) { for (const id of ["nachSave", "nachDel", "nachTermin", "nachEsk", "nachEskAus", "nachErledigt"]) { const b = $(id); if (b) b.disabled = on; } }
   // Weicht das Formular von der gespeicherten Nacharbeit ab? Ein geschriebener Vermerk zählt mit.
   function nGeaendert() {
     const n = nEdit && state.nach.get(nEdit);
@@ -3650,7 +3823,8 @@
     const i = nBasis ? z.indexOf(erste) : -1;
     return i < 0 ? z : z.slice(0, i);
   }
-  // opt.status: Stand erzwingen (Erledigt); opt.bleib: Fenster offen lassen. Ergebnis: true, wenn gespeichert (oder nichts zu tun)
+  // opt.status: Stand erzwingen (Erledigt); opt.eskaliert: eskalieren (true) oder aufheben (false); opt.bleib: Fenster offen lassen.
+  // Ergebnis: true, wenn gespeichert (oder nichts zu tun)
   async function nSpeichern(opt = {}) {
     if (!state.canWrite || !sb || nBusy === nGen) return false;
     const f = nFormular(), edit = nEdit;
@@ -3664,6 +3838,7 @@
     // Stand nur, wenn hier gewählt oder erzwungen: ein unverändert gelassener setzt keine inzwischen geänderte Angabe zurück
     if (edit && (opt.status || nStatusWahl() !== nStatusAuf)) daten.status = opt.status || nStatusWahl();
     if (edit && f.vermerk) daten.vermerk = f.vermerk;
+    if (edit && typeof opt.eskaliert === "boolean") daten.eskaliert = opt.eskaliert;
     if (edit && !daten.vermerk) {
       const alt = state.nach.get(edit);
       if (alt && alt.updated_at === stamp && Object.keys(daten).every(k => (alt[k] ?? null) === daten[k])) { if (!opt.bleib) nachDlg.close(); return true; }
@@ -3684,12 +3859,14 @@
       }
       putNach(d);
       afterNach();
-      const fertig = daten.status === "erledigt";
-      if (!hier()) { if (gleicheSitzung(sg)) toast(`„${kurz(f.titel, 40)}“ ${fertig ? "erledigt" : edit ? "gespeichert" : "angelegt"}`); return true; }
+      const fertig = daten.status === "erledigt", esk = daten.eskaliert;
+      const wie = fertig ? "erledigt" : esk === true ? "eskaliert" : esk === false ? "nicht mehr eskaliert" : edit ? "gespeichert" : "angelegt";
+      if (!hier()) { if (gleicheSitzung(sg)) toast(`„${kurz(f.titel, 40)}“ ${wie}`); return true; }
       if (opt.bleib && edit) { nAktuell(d, daten.vermerk); return true; }
       nachDlg.close();
       if (!edit && state.nfilter !== "offen") { state.nfilter = "offen"; if (state.tab === "nacharbeiten") renderNach(); }
-      toast(fertig ? "Nacharbeit erledigt" : edit ? "Nacharbeit gespeichert" : "Nacharbeit angelegt");
+      toast(fertig ? "Nacharbeit erledigt" : esk === true ? (state.tab === "eskalation" ? "Nacharbeit eskaliert" : "Nacharbeit eskaliert, sie steht jetzt unter Eskalation")
+        : esk === false ? "Eskalation aufgehoben, sie steht wieder unter Nacharbeiten" : edit ? "Nacharbeit gespeichert" : "Nacharbeit angelegt", esk != null ? 3500 : undefined);
       return true;
     } catch (e) {
       // Ohne Fehlercode der Datenbank (Verbindung weg, Antwort verloren) ist offen, ob der Vermerk ankam
@@ -3813,7 +3990,8 @@
     nEdit = nStamp = nNeuId = null; nBasis = ""; nUnklar = null; disarm($("nachDel"));
   }
   nachDlg.addEventListener("close", () => { if (nachDlg.open) return; wipeNach(); });
-  // Live-Änderungen der Nacharbeiten über eine eigene Verbindung
+  // Live-Änderungen der Nacharbeiten und der zugewiesenen Aufgaben über eine eigene Verbindung. Aufgaben kommen nur an, wenn
+  // man sie lesen darf (Verwalter alle, sonst die eigenen); vom Löschen kommt nur die Kennung.
   function nachKanal() {
     const ch = beitrittFest(sb.channel("nacharbeiten-live"))
       .on("postgres_changes", { event: "*", schema: "public", table: NT }, (p) => {
@@ -3822,23 +4000,543 @@
         else if (p.new && p.new.id) { if (p.eventType === "INSERT") nWeg.delete(p.new.id); putNach(p.new); }
         afterNach();
       })
+      .on("postgres_changes", { event: "*", schema: "public", table: AT }, (p) => {
+        if (isLocked() || (state.me && state.me.team)) return;
+        if (p.eventType === "DELETE") dropAuf(p.old && p.old.id);
+        else if (p.new && p.new.id) { if (p.eventType === "INSERT") aWeg.delete(p.new.id); putAuf(p.new); }
+        afterAuf();
+      })
       .on("system", {}, (m) => {
         if (ch !== nchannel || !datenAbo(m) || isLocked()) return;
         // Was zwischen Beitritt und Abo geändert wurde, kam nicht live: nachladen (wie bei den Leads)
         const nachToken = tokenNeu.has(ch) && performance.now() - tokenNeu.get(ch) < 20000;
         if (!aboGemeldet.has(ch) || !nachToken || m.status !== "ok") nLuecke.add(ch);
         aboGemeldet.add(ch);
-        if (m.status === "ok" && nLuecke.has(ch)) { nLuecke.delete(ch); nachBald(); }
+        if (m.status === "ok" && nLuecke.has(ch)) { nLuecke.delete(ch); nachBald(); aufBald(); }
       })
       .subscribe((st) => {
         if (ch !== nchannel) return;
-        if (st === "SUBSCRIBED") { njoined = true; seitErstem(ch); aboGemeldet.delete(ch); clearTimeout(nFirstT); nachBald(); }
+        if (st === "SUBSCRIBED") { njoined = true; seitErstem(ch); aboGemeldet.delete(ch); clearTimeout(nFirstT); nachBald(); aufBald(); }
         else if (st === "CLOSED" || abgelehnt(st, ch)) kanalZu(ch);
         else if (st === "CHANNEL_ERROR" || st === "TIMED_OUT") njoined = false;
       });
     kanaele.add(ch);
     return ch;
   }
+
+  // ---------- Zugewiesene Aufgaben ----------
+  // Nur Verwalter vergeben Aufgaben an Personen mit eigenem Zugang. Lesen dürfen nur Verwalter und die Person, für die sie ist;
+  // diese darf nur „erledigt“ setzen oder zurücknehmen. Für wen (Name), von wem vergeben und wann von wem erledigt schreibt die
+  // Datenbank. Die Person bekommt ihre offenen Aufgaben als Hinweisfenster: beim Öffnen der Seite und sobald eine neue ankommt.
+  // Geladen werden alle offenen und die zuletzt erledigten; Live-Änderungen kommen über den Kanal der Nacharbeiten.
+  const AT = "kalender_aufgaben";
+  const ACOLS = "id,titel,beschreibung,fuer,fuer_name,faellig,erledigt,erledigt_am,erledigt_von,vergeben_von,bearbeitet_von,created_at,updated_at";
+  const AUF_ERL = 100;
+  const aufDlg = $("aufDlg"), aufPop = $("aufPop");
+  // Live-Änderungen während einer laufenden Abfrage und die gelöschten dieser Anmeldung (wie bei den Nacharbeiten)
+  let aufSeq = 0, aTouched = new Map(), aWeg = new Set(), aFort = new Set(), aufRetryT = null, aufRetryMs = 5000, aufT = null, aufLaedt = false, aufMehr = false;
+  // Im Hinweisfenster schon gezeigt (bis zum nächsten Öffnen der Seite); Aufgaben, deren „Erledigt“ gerade unterwegs ist
+  const aufGesehen = new Set(), aufLaeuft = new Set();
+
+  function applyAuf(r) {
+    if (aWeg.has(r.id)) return;
+    const cur = state.auf.get(r.id);
+    if (!cur || tsOf(r.updated_at) >= tsOf(cur.updated_at)) state.auf.set(r.id, r);
+  }
+  function putAuf(r) { if (isLocked() || !r || !r.id) return; aTouched.set(r.id, r); applyAuf(r); }
+  function dropAuf(id) { if (!id) return; aTouched.set(id, null); aWeg.add(id); state.auf.delete(id); }
+  const aufMein = (a) => !!(state.me && state.me.id) && a.fuer === state.me.id;
+  // Rot ab dem Tag nach „Erledigen bis“
+  const aufUeber = (a) => !a.erledigt && !!a.faellig && a.faellig < ymd(new Date());
+  // Nach jeder Änderung: Liste, Zahl am Reiter, offenes Fenster und Hinweisfenster nachziehen
+  let aLoescht = null;
+  function afterAuf() {
+    if (isLocked()) return;
+    if (aufDlg.open && aEdit && aEdit !== aLoescht && aWeg.has(aEdit)) { aufDlg.close(); toast("Diese Aufgabe wurde gerade gelöscht"); }
+    else if (aufDlg.open && aEdit && aEdit !== aLoescht && aFort.has(aEdit) && !state.auf.has(aEdit)) {
+      aufDlg.close();
+      if (!istVerwalter()) toast("Diese Aufgabe ist nicht mehr für dich da (gelöscht oder jemand anderem gegeben).", 7000);
+      // Verwalter sehen alle Aufgaben: fehlt eine, ist sie gelöscht, außer das Verwalter-Recht ist gerade weg (dann erst die Rolle klären)
+      else {
+        const sg = sitzGen;
+        checkMe().then(r => {
+          if (r === "weg" || !gleicheSitzung(sg) || isLocked()) return;
+          if (r !== "ok") toast("Diese Aufgabe ist nicht mehr da.");
+          else if (istVerwalter()) toast("Diese Aufgabe wurde gerade gelöscht");
+          else toast("Diese Aufgabe ist nicht mehr für dich da (gelöscht oder jemand anderem gegeben).", 7000);
+        });
+      }
+    }
+    else if (aufDlg.open) renderAufStand();
+    aufBadge();
+    if (state.tab === "aufgaben") renderAuf();
+    aufPopBald();
+  }
+  function aufBald() { clearTimeout(aufT); aufT = null; if (sb && !isLocked()) aufT = setTimeout(loadAuf, 300); }
+  // Regelmäßiger Abgleich (bei jeder Nachfrage nach dem Zugang): nur Kennung und Stand der offenen und der zuletzt erledigten Aufgaben
+  // (wie loadAuf), wenige Bytes. Ganz neu geladen wird nur, wenn sie nicht zu dem passen, was die Seite zeigt (etwa eine Aufgabe jemand
+  // anderem gegeben wurde: davon kommt keine Live-Nachricht).
+  async function aufAbgleich() {
+    if (!sb || isLocked() || aufT || aufLaedt) return;
+    const seq = aufSeq, sg = sitzGen;
+    let r, e;
+    try {
+      [r, e] = await Promise.all([sb.from(AT).select("id,updated_at").eq("erledigt", false).limit(500),
+        sb.from(AT).select("id,updated_at").eq("erledigt", true).order("updated_at", { ascending: false }).order("id", { ascending: false }).limit(AUF_ERL)]);
+    } catch { return; }
+    // Inzwischen neu geladen, abgemeldet oder ein volles Laden steht an: diese Antwort gilt nicht
+    if (seq !== aufSeq || !gleicheSitzung(sg) || isLocked() || aufT || aufLaedt || r.error || e.error || !Array.isArray(r.data) || !Array.isArray(e.data)) return;
+    const neuer = (liste, da) => liste.some(x => !da.has(x.id) || tsOf(x.updated_at) > tsOf(da.get(x.id).updated_at));
+    const offen = new Map([...state.auf.values()].filter(a => !a.erledigt).map(a => [a.id, a]));
+    const erl = new Map([...state.auf.values()].filter(a => a.erledigt).map(a => [a.id, a])), dort = new Set(e.data.map(x => x.id));
+    // Eine erledigte, die die Seite zeigt, fehlt dort: weg, außer sie fällt nur hinter die letzten AUF_ERL (älter als die älteste dort)
+    const grenze = e.data.length < AUF_ERL ? -Infinity : tsOf(e.data[e.data.length - 1].updated_at);
+    if (r.data.length !== offen.size || neuer(r.data, offen) || neuer(e.data, erl) || [...erl.values()].some(a => !dort.has(a.id) && tsOf(a.updated_at) >= grenze)) aufBald();
+  }
+  async function loadAuf() {
+    if (!sb || isLocked()) return;
+    clearTimeout(aufRetryT); clearTimeout(aufT); aufT = null;
+    // Der Team-Zugang bekommt keine Aufgaben
+    if (state.me && state.me.team) return;
+    const seq = ++aufSeq, at = aTouched = new Map(), vorherWeg = new Set(aWeg);
+    aufLaedt = true;
+    try {
+      const [o, e] = await Promise.all([
+        sb.from(AT).select(ACOLS).eq("erledigt", false).order("created_at").order("id").limit(500),
+        sb.from(AT).select(ACOLS).eq("erledigt", true).order("updated_at", { ascending: false }).order("id", { ascending: false }).limit(AUF_ERL)]);
+      if (seq !== aufSeq || isLocked()) return;
+      if (o.error) throw o.error;
+      if (e.error) throw e.error;
+      const warOffen = [...state.auf.values()].filter(a => !a.erledigt).map(a => a.id);
+      state.auf = new Map();
+      for (const r of [...o.data, ...e.data]) { if (vorherWeg.has(r.id)) aWeg.delete(r.id); applyAuf(r); }
+      for (const [id, r] of at) { if (r) applyAuf(r); else state.auf.delete(id); }
+      // Offene, die es nicht mehr gibt (gelöscht oder jemand anderem gegeben): ihr Fenster schließt afterAuf
+      aFort = new Set(warOffen.filter(id => !state.auf.has(id)));
+      aufMehr = e.data.length === AUF_ERL;
+      state.aufLoaded = true; state.aufErr = false; aufRetryMs = 5000;
+      afterAuf();
+    } catch (err) {
+      if (seq !== aufSeq || projFail(err)) return;
+      // Später erneut versuchen, mit wachsendem Abstand
+      state.aufErr = true; if (state.tab === "aufgaben") renderAuf();
+      aufRetryT = setTimeout(loadAuf, aufRetryMs); aufRetryMs = Math.min(aufRetryMs * 2, 120000);
+    } finally { if (seq === aufSeq) aufLaedt = false; }
+  }
+
+  // ---------- Übersicht (Reiter Aufgaben) ----------
+  // Offene: überfällige zuerst, dann nach „Erledigen bis“ (ohne Datum zuletzt), dann die ältesten
+  const aufReihe = (a, b) => Number(aufUeber(b)) - Number(aufUeber(a)) || (a.faellig || "9999").localeCompare(b.faellig || "9999")
+    || tsOf(a.created_at) - tsOf(b.created_at) || String(a.id).localeCompare(String(b.id));
+  // Zahl der offenen am Reiter: rot, wenn eine überfällig ist oder einem selbst gehört (dann ist etwas zu tun)
+  let aRotSig = "";
+  const aSig = () => ymd(new Date()) + "|" + [...state.auf.values()].filter(aufUeber).map(a => a.id).sort().join();
+  function aufBadge() {
+    const b = $("aufTabCnt");
+    let n = 0, rot = false;
+    if (state.aufLoaded && !isLocked()) { for (const a of state.auf.values()) if (!a.erledigt) { n++; if (aufUeber(a) || aufMein(a)) rot = true; } aRotSig = aSig(); }
+    b.hidden = !n; b.textContent = n ? String(n) : ""; b.classList.toggle("ueber", rot);
+    $("tab-aufgaben").setAttribute("aria-label", n ? `Aufgaben, ${n} offen` : "Aufgaben");
+  }
+  function aufFrist(a) {
+    if (a.erledigt) return { cls: "erl", kids: [svgCheck(), el("span", { class: "lft" }, el("span", null, "erledigt " + fmtTag(a.erledigt_am || a.updated_at)),
+      a.erledigt_von ? el("span", { class: "lfv" }, "von " + a.erledigt_von) : null)] };
+    if (!a.faellig) return { cls: "frei", kids: [svgUhr(), "offen"] };
+    if (aufUeber(a)) return { cls: "ueber", kids: [svgUhr(), `überfällig, bis ${dmK(a.faellig)}`] };
+    return { cls: a.faellig === ymd(new Date()) ? "knapp" : "frei", kids: [svgUhr(), a.faellig === ymd(new Date()) ? "bis heute" : `bis ${dmK(a.faellig)}`] };
+  }
+  function aufRow(a) {
+    const f = aufFrist(a), verw = istVerwalter();
+    const meta = `Von ${a.vergeben_von}, ${fmtTag(a.created_at)}`;
+    return el("button", { class: "lrow nrow", type: "button", "data-aid": a.id, "data-status": a.erledigt ? "erledigt" : "offen", "data-rot": f.cls === "ueber" ? "" : null,
+      onclick: () => openAuf(a.id) },
+      el("span", { class: "lt" }, el("span", { class: "ltn" }, a.titel),
+        verw ? el("span", { class: "badge lart", title: "Für " + a.fuer_name }, aufMein(a) ? "Für dich" : kurz(a.fuer_name, 24)) : null),
+      el("span", { class: "lm" }, el("span", { class: "ln" }, meta)),
+      el("span", { class: "lf " + f.cls }, f.kids),
+      svgNext());
+  }
+  function renderAuf() {
+    const box = $("aufList"), verw = istVerwalter();
+    $("aufHint").textContent = verw
+      ? "Aufgaben vergeben nur Verwalter. Sehen können sie nur die Verwaltung und die Person, für die sie ist; erledigt meldet die Person selbst. Rot wird, was nach dem Tag „Erledigen bis“ noch offen ist."
+      : "Aufgaben, die dir die Verwaltung zugewiesen hat. Sehen können sie nur du und die Verwaltung. Ist eine erledigt, öffne sie und wähle „Erledigt“.";
+    box.setAttribute("aria-busy", String(!state.aufLoaded));
+    if (!state.aufLoaded) {
+      $("aufCount").textContent = "";
+      box.replaceChildren(state.aufErr
+        ? el("div", { class: "empty" }, el("span", null, "Aufgaben konnten nicht geladen werden."),
+            el("button", { class: "btn", type: "button", onclick: () => { state.aufErr = false; renderAuf(); loadAuf(); } }, "Erneut versuchen"))
+        : el("div", { class: "empty" }, "Aufgaben werden geladen …"));
+      return;
+    }
+    // Neu zeichnen (Live-Änderung) behält den Tastaturfokus auf derselben Zeile
+    const act = document.activeElement, fokus = act && box.contains(act) ? act.dataset.aid : null, y = scrollY;
+    const all = [...state.auf.values()], offen = all.filter(a => !a.erledigt).sort(aufReihe);
+    const erl = all.filter(a => a.erledigt).sort((a, b) => tsOf(b.erledigt_am || b.updated_at) - tsOf(a.erledigt_am || a.updated_at) || String(b.id).localeCompare(String(a.id)));
+    const rot = offen.filter(aufUeber).length;
+    $("aufCount").textContent = [`${offen.length} offen`, rot ? `${rot} überfällig` : null, erl.length ? `${erl.length} erledigt` : null].filter(Boolean).join(" · ");
+    const gruppe = (titel, list) => el("section", { class: "lgruppe" },
+      el("h3", null, titel, el("span", { class: "num" }, list.length)), el("ul", { class: "lrows" }, list.map(a => el("li", null, aufRow(a)))));
+    if (!all.length) box.replaceChildren(el("div", { class: "empty" }, el("span", null, verw ? "Noch keine Aufgaben vergeben." : "Keine Aufgaben für dich."),
+      verw && state.canWrite ? el("button", { class: "btn primary", type: "button", onclick: () => openAuf(null) }, svgPlus(), "Neue Aufgabe") : null));
+    else fill(box, offen.length ? gruppe(verw ? "Offen" : "Für dich offen", offen) : el("div", { class: "empty" }, verw ? "Keine offenen Aufgaben." : "Keine offenen Aufgaben für dich."),
+      erl.length ? gruppe("Erledigt", erl) : null,
+      aufMehr ? el("p", { class: "phint" }, `Gezeigt werden die letzten ${AUF_ERL} erledigten.`) : null);
+    if (fokus) box.querySelector(`.lrow[data-aid="${CSS.escape(fokus)}"]`)?.focus({ preventScroll: true });
+    if (fokus && scrollY !== y) scrollTo(scrollX, y);
+  }
+  // Jede Minute: ist eine Aufgabe überfällig geworden (oder ein neuer Tag), Zahl und Liste nachziehen
+  function aufTick() {
+    if (!state.aufLoaded || isLocked() || aSig() === aRotSig) return;
+    aufBadge();
+    if (state.tab === "aufgaben") renderAuf();
+    if (aufDlg.open) renderAufStand();
+    if (aufPop.open) aufPopBald();
+  }
+  setInterval(aufTick, 60 * 1000);
+  // Wer angemeldet ist, steht fest oder hat sich geändert: Reiter nur mit eigenem Zugang, „Neue Aufgabe“ nur für Verwalter
+  let aufWerSig = "", aufRolle = "";
+  function aufWer() {
+    const me = state.me, weg = !me || !!me.team || isLocked();
+    $("tab-aufgaben").hidden = weg;
+    if (me && me.team && state.tab === "aufgaben" && !isLocked()) { setTab("kalender"); return; }
+    const sig = `${weg}|${me ? me.id : ""}|${istVerwalter()}`;
+    if (sig === aufWerSig) return;
+    aufWerSig = sig;
+    // Verwalter-Recht kam hinzu oder fiel weg: geladen ist, was die alte Rolle lesen durfte. Fremde Aufgaben sofort weg, ein
+    // offenes Aufgabenfenster zu (es zeigt die Knöpfe der alten Rolle), dann neu laden.
+    if (!weg) {
+      const v = istVerwalter(), vorher = aufRolle;
+      aufRolle = `${me.id}|${v}`;
+      if (vorher === `${me.id}|${!v}`) {
+        if (!v) for (const [id, a] of state.auf) if (!aufMein(a)) state.auf.delete(id);
+        if (aufDlg.open) aufDlg.close();
+        aufBald();
+      }
+    }
+    if (state.tab === "aufgaben") { $("newBtn").hidden = !istVerwalter(); renderAuf(); }
+    aufBadge(); aufPopBald();
+  }
+
+  // ---------- Aufgabe vergeben, ansehen, erledigen ----------
+  let aEdit = null, aStamp = null, aBasis = null, aNeuId = null, aGen = 0, aBusy = -1;
+  // Personen mit eigenem Zugang (öffentliche Namensliste wie bei der Anmeldung); kommt beim Öffnen frisch
+  let aufLeute = [];
+  function aufFuerFuellen(cur, curName) {
+    const sel = $("a-fuer"), keep = sel.value || cur || "";
+    const leute = aufLeute.filter(x => !x.team && x.id);
+    const opts = [el("option", { value: "" }, leute.length ? "Person wählen …" : "Namen werden geladen …"), ...leute.map(x => el("option", { value: x.id }, x.name))];
+    if (cur && !leute.some(x => x.id === cur)) opts.push(el("option", { value: cur }, curName || "Bisherige Person"));
+    sel.replaceChildren(...opts);
+    if ([...sel.options].some(o => o.value === keep)) sel.value = keep;
+  }
+  async function aufLeuteHolen(g) {
+    let r; try { r = await namenHolen(); } catch { r = { error: {} }; }
+    if (g !== aGen || !aufDlg.open) return;
+    if (r.error || !Array.isArray(r.data)) { if (!aufLeute.length) $("aufErr").textContent = "Die Namensliste konnte nicht geladen werden. Prüfe die Verbindung und öffne das Fenster erneut."; return; }
+    aufLeute = r.data;
+    const a = aEdit && state.auf.get(aEdit);
+    aufFuerFuellen(a ? a.fuer : null, a ? a.fuer_name : null);
+  }
+  const aFeld = (id) => $(id).closest(".field");
+  function openAuf(id) {
+    const a = id ? state.auf.get(id) : null;
+    if (id && !a) return;
+    const verw = istVerwalter() && state.canWrite;
+    if (!a && !verw) return;
+    meBald();
+    // Was das Schließen verwirft, auch hier: das close-Ereignis kann nach einem schnellen Wiederöffnen ausfallen
+    wipeAuf();
+    // Die Person, für die sie ist: nur lesen und „Erledigt“
+    const ro = !verw;
+    aEdit = id; aStamp = a ? a.updated_at : null; aBasis = a ? aWerte(a) : null;
+    // Neue Aufgabe: Kennung schon jetzt, damit ein zweiter Versuch nach Verbindungsabbruch keine zweite anlegt
+    aNeuId = a ? null : crypto.randomUUID();
+    $("aufDlgTitle").textContent = !a ? "Neue Aufgabe" : ro ? "Aufgabe" : "Aufgabe bearbeiten";
+    $("a-titel").value = a ? a.titel : "";
+    $("a-faellig").value = a ? a.faellig || "" : "";
+    $("a-text").value = a ? a.beschreibung || "" : "";
+    if (ro) $("a-fuer").replaceChildren(el("option", { value: a.fuer }, a.fuer_name));
+    else { if (!aufLeute.length) aufLeute = names; aufFuerFuellen(a ? a.fuer : null, a ? a.fuer_name : null); aufLeuteHolen(aGen); }
+    // Lesend nur, was ausgefüllt ist
+    aFeld("a-fuer").hidden = ro; aFeld("a-faellig").hidden = ro && !a.faellig; aFeld("a-text").hidden = ro && !a.beschreibung;
+    renderAufStand();
+    $("aufSave").textContent = a ? "Speichern" : "Vergeben"; $("aufSave").hidden = ro; $("aufSave").disabled = false;
+    $("aufDel").hidden = !a || ro; $("aufDel").disabled = false;
+    $("aufCancel").textContent = ro ? "Schließen" : "Abbrechen";
+    aufDlg.querySelectorAll("input, textarea, select").forEach(x => { x.disabled = ro; });
+    $("aufStamp").textContent = a && a.updated_at ? `Geändert ${fmtStamp(a.updated_at)}` : "";
+    $("a-titel").autofocus = !ro && !a;
+    $("aufCancel").autofocus = ro || !!a;
+    oeffne(aufDlg);
+    aufDlg.scrollTop = 0;
+  }
+  // Stand oben im Fenster: offen, überfällig oder erledigt, für wen, von wem vergeben, dazu „Erledigt“ oder „Wieder öffnen“
+  function renderAufStand() {
+    const box = $("aufStand"), a = aEdit && state.auf.get(aEdit);
+    if (!a) { box.hidden = true; fill(box); return; }
+    const busy = aBusy === aGen || aufLaeuft.has(a.id), ueber = aufUeber(a), heute = a.faellig === ymd(new Date());
+    const fokus = box.contains(document.activeElement) ? document.activeElement.id : "";
+    box.hidden = false; box.dataset.s = a.erledigt ? "erledigt" : ueber ? "ueber" : heute ? "knapp" : "kontaktiert";
+    const vergeben = `Vergeben von ${a.vergeben_von} am ${fmtWhen(a.created_at)}.`;
+    const info = a.erledigt ? `Erledigt ${fmtWhen(a.erledigt_am || a.updated_at)}${a.erledigt_von ? ` von ${a.erledigt_von}` : ""}. ${vergeben}`
+      : `${a.faellig ? (ueber ? `Sollte bis ${dmK(a.faellig)} erledigt sein. ` : heute ? "Heute erledigen. " : `Erledigen bis ${dmK(a.faellig)}. `) : ""}${vergeben}`;
+    const fuer = istVerwalter() ? ` · für ${aufMein(a) ? "dich" : a.fuer_name}` : "";
+    fill(box,
+      el("span", { class: "lsi", "aria-hidden": "true" }, a.erledigt ? svgCheck() : svgUhr()),
+      el("span", { class: "lsx" }, el("strong", null, (a.erledigt ? "Erledigt" : ueber ? "Überfällig" : "Offen") + fuer), el("span", null, info)),
+      el("span", { class: "lsacts" }, a.erledigt
+        ? el("button", { class: "btn small", type: "button", id: "aufWieder", disabled: busy, onclick: () => aufErledigt(a.id, false) }, "Wieder öffnen")
+        : el("button", { class: "btn primary small", type: "button", id: "aufErledigt", disabled: busy, onclick: () => aufErledigt(a.id, true) }, svgCheck(), "Erledigt")));
+    if (fokus) $(fokus)?.focus({ preventScroll: true });
+  }
+  function aSperre(on) { for (const id of ["aufSave", "aufDel", "aufErledigt", "aufWieder"]) { const b = $(id); if (b) b.disabled = on; } }
+  const aufWriteError = (e, sg) => {
+    if (projFail(e, sg)) return "";
+    if (e && e.code === "23503") return "Diese Person hat keinen aktiven Zugang (nicht eingerichtet oder gesperrt). Bitte eine andere wählen.";
+    if (e && ["23514", "22001", "22007", "22008"].includes(e.code)) return "Ein Feld ist ungültig oder zu lang: Aufgabe bis 120, Beschreibung bis 1000 Zeichen, Datum zwischen 2020 und 2100.";
+    if (e && e.code === "42501") return "Aufgaben vergeben und ändern dürfen nur Verwalter.";
+    if (e && e.status === 429) return "Gerade zu viele Änderungen auf einmal. Bitte kurz warten und erneut speichern.";
+    return STEP_ALLG;
+  };
+  // Erledigt setzen oder zurücknehmen (die Person, für die sie ist, und Verwalter). Es zählt nur dieser Schalter, ohne Abgleich
+  // des übrigen Stands. pop: aus dem Hinweisfenster (Fehler stehen dann dort).
+  async function aufErledigt(id, wert, pop) {
+    const a = state.auf.get(id);
+    if (!sb || isLocked() || !a || aufLaeuft.has(id)) return;
+    const sg = sitzGen, g = aGen, hier = () => g === aGen && aufDlg.open && aEdit === id && gleicheSitzung(sg);
+    // Verwalter mit geänderten, noch nicht gespeicherten Feldern: das Schließen nach „Erledigt“ würde sie verwerfen. Verglichen
+    // wird mit dem Stand, mit dem das Fenster gefüllt wurde (eine Änderung von jemand anderem ist keine eigene).
+    const basis = hier() ? aBasis : null;
+    if (!pop && basis && !$("aufSave").hidden) {
+      const f = aFormular();
+      if (AFELDER.some(k => basis[k] !== f[k])) { $("aufErr").textContent = "Erst die Änderungen speichern (oder abbrechen), dann erledigt melden."; return; }
+    }
+    if (!pop && hier()) $("aufErr").textContent = "";
+    aufLaeuft.add(id); renderAufStand(); if (aufPop.open) aufPopBald();
+    try {
+      const res = await sb.from(AT).update({ erledigt: wert }).eq("id", id).select(ACOLS);
+      check(res);
+      if (!gleicheSitzung(sg)) return;
+      if (!res.data.length) {
+        // Inzwischen gelöscht oder einer anderen Person gegeben. Nicht als gelöscht merken: wird sie zurückgegeben, kommt sie
+        // mit dem nächsten Laden wieder.
+        const da = hier();
+        aTouched.set(id, null); state.auf.delete(id);
+        if (da) aufDlg.close();
+        afterAuf();
+        toast(`„${kurz(a.titel, 40)}“ wurde inzwischen gelöscht oder jemand anderem gegeben.`, 7000);
+        return;
+      }
+      const d = res.data[0];
+      putAuf(d);
+      // Bleibt das Fenster offen, gilt für das nächste Speichern dieser Stand, aber nur, wenn er dem Fenster entspricht. Hat
+      // inzwischen jemand anderes Felder geändert, bleibt der alte: Speichern zeigt dann den Konflikt, statt still zu überschreiben.
+      if (hier() && basis) {
+        if (AFELDER.every(k => (d[k] ?? null) === basis[k])) { aStamp = d.updated_at; $("aufStamp").textContent = `Geändert ${fmtStamp(aStamp)}`; }
+        else if (!wert && !$("aufSave").hidden) $("aufErr").textContent = "Jemand hat diese Aufgabe gerade geändert. Abbrechen zeigt die neue Fassung, Speichern überschreibt sie mit deiner.";
+      }
+      if (wert && hier()) aufDlg.close();
+      afterAuf();
+      toast(wert ? "Aufgabe erledigt" : "Aufgabe wieder offen");
+    } catch (e) {
+      if (projFail(e, sg)) return;
+      const m = e && e.status === 429 ? "Gerade zu viele Änderungen auf einmal. Bitte kurz warten und erneut versuchen." : "Speichern hat nicht geklappt. Prüfe die Verbindung und versuche es erneut.";
+      if (pop && aufPop.open) $("aufPopErr").textContent = m;
+      else if (hier()) $("aufErr").textContent = m;
+      else toast(nichtText(a.titel, wert ? "als erledigt gespeichert" : "wieder geöffnet", m), 7000);
+    } finally {
+      aufLaeuft.delete(id);
+      if (gleicheSitzung(sg)) { if (aufDlg.open) renderAufStand(); if (aufPop.open) aufPopBald(); }
+    }
+  }
+  const AFELDER = ["titel", "fuer", "faellig", "beschreibung"];
+  const aWerte = (a) => Object.fromEntries(AFELDER.map(k => [k, a[k] ?? null]));
+  function aFormular() {
+    return { titel: einZeile($("a-titel").value), fuer: $("a-fuer").value || null, faellig: $("a-faellig").value || null, beschreibung: $("a-text").value.trim() || null };
+  }
+  // Nur Verwalter: vergeben oder ändern
+  async function aSpeichern() {
+    if (!sb || !istVerwalter() || !state.canWrite || aBusy === aGen) return;
+    const f = aFormular(), edit = aEdit;
+    const err = !f.titel ? "Bitte eintragen, was zu tun ist." : !f.fuer ? "Bitte wählen, für wen die Aufgabe ist."
+      : f.faellig && !(/^\d{4}-\d\d-\d\d$/.test(f.faellig) && f.faellig >= "2020-01-01" && f.faellig <= "2100-12-31") ? "Bitte das Datum prüfen." : "";
+    if (err) { $("aufErr").textContent = err; return; }
+    // Was zum Fenster gehört, jetzt festhalten: wird es während des Speicherns geschlossen oder neu geöffnet, ändern sich diese Werte
+    const g = aGen, sg = sitzGen, stamp = aStamp, basis = aBasis, neuId = aNeuId, hier = () => g === aGen && aufDlg.open && gleicheSitzung(sg);
+    const daten = {};
+    for (const k of AFELDER) daten[k] = f[k];
+    if (edit) {
+      const alt = state.auf.get(edit);
+      if (alt && alt.updated_at === stamp && AFELDER.every(k => (alt[k] ?? null) === daten[k])) { aufDlg.close(); return; }
+    }
+    aBusy = g; aSperre(true); $("aufErr").textContent = "";
+    try {
+      let d;
+      if (edit) {
+        const res = await sb.from(AT).update(daten).eq("id", edit).eq("updated_at", stamp).select(ACOLS);
+        check(res);
+        if (!gleicheSitzung(sg)) return;
+        d = res.data.length ? res.data[0] : await aKonflikt(edit, g, sg, daten, basis);
+      } else {
+        const res = await sb.from(AT).insert({ id: neuId, ...daten }).select(ACOLS).single();
+        // 23505: der erste Versuch kam schon an, nur die Antwort ging verloren. Dann mit diesem Stand weiter.
+        if (res.error && res.error.code === "23505") {
+          if (!gleicheSitzung(sg)) return;
+          const one = await sb.from(AT).select(ACOLS).eq("id", neuId).maybeSingle();
+          if (!gleicheSitzung(sg)) return;
+          if (one.error) throw one.error;
+          // Inzwischen gelöscht: der nächste Versuch legt sie neu an
+          if (!one.data) { if (hier()) aNeuId = crypto.randomUUID(); throw {}; }
+          d = one.data;
+          if (AFELDER.some(k => (d[k] ?? null) !== daten[k])) {
+            const u = await sb.from(AT).update(daten).eq("id", neuId).eq("updated_at", d.updated_at).select(ACOLS);
+            check(u);
+            if (!gleicheSitzung(sg)) return;
+            d = u.data.length ? u.data[0] : await aKonflikt(neuId, g, sg, daten);
+          }
+        } else { check(res); d = res.data; }
+      }
+      if (!d || !gleicheSitzung(sg)) return;
+      putAuf(d);
+      const da = hier();
+      if (da) aufDlg.close();
+      afterAuf();
+      toast(da ? (edit ? "Aufgabe gespeichert" : `Aufgabe an ${d.fuer_name} vergeben`) : `„${kurz(f.titel, 40)}“ ${edit ? "gespeichert" : "vergeben"}`);
+    } catch (e) {
+      const m = aufWriteError(e, sg);
+      if (m && hier()) $("aufErr").textContent = m; else if (m && gleicheSitzung(sg)) toast(nichtText(f.titel, edit ? "gespeichert" : "vergeben", m), 7000);
+    } finally { if (aBusy === g) { aBusy = -1; if (g === aGen) aSperre(false); } }
+  }
+  // Speichern traf auf eine neuere Fassung (oder die Aufgabe ist weg). Steht schon alles so da (nur die Antwort ging verloren),
+  // gilt es als gespeichert (Ergebnis: die Zeile). Sonst Meldung und null; das Fenster bearbeitet dann die neue Fassung.
+  // basis: die Felder, mit denen das Fenster gefüllt wurde
+  async function aKonflikt(id, g, sg, daten, basis) {
+    const hier = () => g === aGen && aufDlg.open && gleicheSitzung(sg);
+    const now = await sb.from(AT).select(ACOLS).eq("id", id).maybeSingle();
+    if (!gleicheSitzung(sg)) return null;
+    if (now.error) throw now.error;
+    if (!now.data) {
+      const h = hier();
+      dropAuf(id); afterAuf();
+      if (h && aufDlg.open) { aufDlg.close(); toast("Diese Aufgabe wurde gerade gelöscht"); }
+      else if (!h) toast(nichtText(daten.titel, "gespeichert", "Sie wurde inzwischen gelöscht."), 7000);
+      return null;
+    }
+    const d = now.data;
+    if (AFELDER.every(k => (d[k] ?? null) === daten[k])) return d;
+    // Seit dem Füllen hat sich an den Feldern nichts geändert, nur erledigt (eigenes „Wieder öffnen“, dessen Antwort verloren ging,
+    // oder die Person hat es gemeldet). Das schreibt Speichern nicht: also einmal auf den neuen Stand speichern statt Konflikt melden.
+    if (basis && AFELDER.every(k => (d[k] ?? null) === basis[k])) {
+      const u = await sb.from(AT).update(daten).eq("id", id).eq("updated_at", d.updated_at).select(ACOLS);
+      check(u);
+      if (!gleicheSitzung(sg)) return null;
+      return u.data.length ? u.data[0] : aKonflikt(id, g, sg, daten, null);
+    }
+    putAuf(d); afterAuf();
+    if (!hier()) { toast(nichtText(daten.titel, "gespeichert", "Jemand hat sie gerade geändert. Bitte öffnen und noch einmal speichern."), 7000); return null; }
+    if (aEdit !== id) { aEdit = id; aNeuId = null; $("aufDlgTitle").textContent = "Aufgabe bearbeiten"; $("aufSave").textContent = "Speichern"; $("aufDel").hidden = false; }
+    aStamp = d.updated_at; aBasis = aWerte(d); renderAufStand();
+    $("aufErr").textContent = "Jemand hat diese Aufgabe gerade geändert. Abbrechen zeigt die neue Fassung, Speichern überschreibt sie mit deiner.";
+    return null;
+  }
+  $("aufForm").addEventListener("submit", (ev) => { ev.preventDefault(); aSpeichern(); });
+  $("aufCancel").addEventListener("click", () => aufDlg.close());
+  aufDlg.addEventListener("click", (ev) => { if (ev.target === aufDlg) aufDlg.close(); });
+  $("aufDel").addEventListener("click", (ev) => confirmClick(ev.currentTarget, "Wirklich löschen?", async () => {
+    const id = aEdit;
+    if (!id || aBusy === aGen) return;
+    const sg = sitzGen, g = aGen, hier = () => g === aGen && aufDlg.open && gleicheSitzung(sg);
+    const name = state.auf.get(id)?.titel || $("a-titel").value.trim() || "Aufgabe";
+    aBusy = g; aSperre(true); $("aufErr").textContent = ""; aLoescht = id;
+    try {
+      const res = await sb.from(AT).delete().eq("id", id).select("id");
+      check(res);
+      if (!gleicheSitzung(sg)) return;
+      if (!res.data.length) {
+        // Schon weg (vielleicht ging nur die Antwort verloren) oder kein Verwalter mehr. Ohne Verwalter-Recht ist eine fremde
+        // Aufgabe auch nicht mehr lesbar: dann klärt erst die Rolle, ob sie wirklich weg ist.
+        const now = await sb.from(AT).select(ACOLS).eq("id", id).maybeSingle();
+        if (!gleicheSitzung(sg)) return;
+        if (now.error) throw now.error;
+        const rolle = now.data ? "ok" : await checkMe();
+        if (!gleicheSitzung(sg) || rolle === "weg") return;
+        if (rolle === "offen") throw {};
+        if (now.data || !istVerwalter()) {
+          if (now.data) putAuf(now.data);
+          afterAuf();
+          const m = "Löschen dürfen nur Verwalter.";
+          if (hier()) $("aufErr").textContent = m; else toast(nichtText(name, "gelöscht", m), 7000);
+          return;
+        }
+      }
+      dropAuf(id);
+      const da = hier();
+      if (da) aufDlg.close();
+      afterAuf();
+      toast(da ? "Aufgabe gelöscht" : `„${kurz(name, 40)}“ gelöscht`);
+    } catch (e) {
+      const m0 = aufWriteError(e, sg), m = m0 === STEP_ALLG ? "Löschen hat nicht geklappt. Prüfe die Verbindung und versuche es erneut." : m0;
+      if (m && hier()) $("aufErr").textContent = m; else if (m && gleicheSitzung(sg)) toast(nichtText(name, "gelöscht", m0), 7000);
+    } finally { if (aLoescht === id) aLoescht = null; if (aBusy === g) { aBusy = -1; if (g === aGen) aSperre(false); } }
+  }));
+  // Inhalte nur so lange im Fenster, wie es offen ist
+  function wipeAuf() {
+    aGen++;
+    $("aufForm").reset(); $("aufErr").textContent = ""; $("aufStamp").textContent = ""; $("aufStand").hidden = true; fill($("aufStand"));
+    $("a-fuer").replaceChildren(); aufDlg.querySelectorAll(".field").forEach(x => { x.hidden = false; });
+    aEdit = aStamp = aBasis = aNeuId = null; disarm($("aufDel"));
+  }
+  aufDlg.addEventListener("close", () => { if (aufDlg.open) return; wipeAuf(); aufPopBald(); });
+
+  // ---------- Hinweisfenster: Aufgaben für mich ----------
+  // Geht auf, sobald unter den eigenen offenen Aufgaben eine ist, die noch nicht gezeigt wurde (beim Öffnen der Seite also alle
+  // offenen). Ist gerade ein anderes Fenster offen, etwa ein Termin in Arbeit, wartet es, bis das zu ist. „Später“ schließt es bis
+  // zur nächsten neuen Aufgabe oder zum nächsten Öffnen der Seite; „Erledigt“ meldet die Aufgabe direkt als erledigt.
+  let aufPopT = 0, aufTipp = 0, aufTaste = 0;
+  document.addEventListener("input", () => { aufTipp = performance.now(); }, true);
+  document.addEventListener("keydown", () => { aufTipp = aufTaste = performance.now(); }, true);
+  const aufPopListe = () => [...state.auf.values()].filter(a => !a.erledigt && aufMein(a)).sort(aufReihe);
+  function aufPopBald() {
+    clearTimeout(aufPopT); aufPopT = 0;
+    if (isLocked() || !state.aufLoaded) return;
+    const list = aufPopListe();
+    if (aufPop.open) { if (list.length) renderAufPop(list); else aufPop.close(); return; }
+    if (!list.some(a => !aufGesehen.has(a.id))) return;
+    // Auch nicht mitten in Tastatur-Arbeit: nach jeder Taste erst ein paar Sekunden Ruhe (sonst landen Tab und Enter, gemeint für die
+    // Seite, im Fenster), in einem Eingabefeld (etwa der Suche) länger
+    const act = document.activeElement, jetzt = performance.now();
+    const tippt = jetzt - aufTaste < 3000 || (!!act && (act.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(act.tagName)) && jetzt - aufTipp < 8000);
+    if (document.querySelector("dialog[open]") || tippt) { aufPopT = setTimeout(aufPopBald, 2000); return; }
+    $("aufPopErr").textContent = "";
+    renderAufPop(list);
+    oeffne(aufPop);
+  }
+  function renderAufPop(list) {
+    const fokus = aufPop.contains(document.activeElement) ? document.activeElement.dataset.aid : null;
+    $("aufPopTitle").textContent = list.length === 1 ? "Aufgabe für dich" : `${list.length} Aufgaben für dich`;
+    fill($("aufPopListe"), list.map(a => el("li", { class: aufGesehen.has(a.id) ? null : "neu" },
+      el("div", { class: "apk" },
+        el("strong", null, a.titel),
+        a.beschreibung ? el("p", null, a.beschreibung) : null,
+        el("span", { class: "apm" + (aufUeber(a) ? " ueber" : "") }, [a.faellig ? (aufUeber(a) ? `Überfällig, sollte bis ${dmK(a.faellig)} erledigt sein`
+          : a.faellig === ymd(new Date()) ? "Heute erledigen" : `Erledigen bis ${dmK(a.faellig)}`) : null, `Von ${a.vergeben_von}, ${fmtTag(a.created_at)}`].filter(Boolean).join(" · "))),
+      el("button", { class: "btn primary small", type: "button", "data-aid": a.id, disabled: aufLaeuft.has(a.id),
+        onclick: () => { $("aufPopErr").textContent = ""; aufErledigt(a.id, true, true); } }, svgCheck(), "Erledigt"))));
+    if (fokus) aufPop.querySelector(`button[data-aid="${CSS.escape(fokus)}"]`)?.focus({ preventScroll: true });
+  }
+  // Erst die Überschrift fokussieren: ein versehentliches Enter oder Leerzeichen (etwa beim Weitertippen) tut so nichts. Auf
+  // „Später“ legte es alle als gesehen ab, auf „Erledigt“ meldete es die erste Aufgabe als erledigt.
+  $("aufPopTitle").autofocus = true;
+  $("aufPopSpaeter").addEventListener("click", () => aufPop.close());
+  aufPop.addEventListener("close", () => {
+    if (aufPop.open) return;
+    // Was gezeigt wurde, gilt als gesehen: erst eine neue Aufgabe öffnet das Fenster wieder
+    for (const a of aufPopListe()) aufGesehen.add(a.id);
+    fill($("aufPopListe")); $("aufPopErr").textContent = "";
+    aufPopBald();
+  });
 
   // ---------- PDF ----------
   // Alle Termine ab dem Ersten des laufenden Monats als PDF, damit man sie auch ohne Internet nachsehen kann.
@@ -4069,9 +4767,9 @@
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) { hiddenAt = Date.now(); return; }
     takt(true);
-    if (sb && !isLocked() && Date.now() - hiddenAt > 60 * 1000) { termineNachladen(); projAbgleich(); leadsBald(); nachBald(); }
-    // Fristen der Leads und Rot der Nacharbeiten: Zeitgeber laufen im Hintergrund gedrosselt
-    leadTick(); nachTick();
+    if (sb && !isLocked() && Date.now() - hiddenAt > 60 * 1000) { termineNachladen(); projAbgleich(); leadsBald(); nachBald(); aufBald(); }
+    // Fristen der Leads, Rot der Nacharbeiten und Aufgaben: Zeitgeber laufen im Hintergrund gedrosselt
+    leadTick(); nachTick(); aufTick();
     kanalVerloren(); liveWieder(true);
   });
 
@@ -4105,9 +4803,11 @@
     if (projDlg.open) projDlg.close();
     if (leadDlg.open) leadDlg.close();
     if (nachDlg.open) nachDlg.close();
+    if (aufDlg.open) aufDlg.close();
+    if (aufPop.open) aufPop.close();
     // Formulare und Unterfenster immer leeren, auch wenn sie gerade zu sind (späte Antworten, vom Browser wiederhergestellte Eingaben).
     // Nicht auf das close-Ereignis warten: in einem verborgenen Tab kommt es in Chrome erst beim Sichtbarwerden.
-    sitzGen++; wipeTermin(); wipeProjForm(); wipeTeam(); wipeLog(); wipeLead(); wipeNach(); $("progBody").replaceChildren(); progOpener = null; hideToast();
+    sitzGen++; wipeTermin(); wipeProjForm(); wipeTeam(); wipeLog(); wipeLead(); wipeNach(); wipeAuf(); $("progBody").replaceChildren(); progOpener = null; hideToast();
     projSeq++; naechsteSeq++; clearTimeout(projRetryT); clearTimeout(naechsteT); stepFailAt = 0; stepPause = 0;
     clearTimeout(stepRetryT); stepRetryT = 0; stepWarten.clear(); stepLaedt.clear(); fertigMax = 100;
     pTouched = new Map(); sTouched = new Map(); stepBusy.clear(); wantSet.clear(); clearTimeout(wantT); wantT = 0; disarmDel();
@@ -4116,11 +4816,15 @@
     $("projList").replaceChildren(); $("projCount").textContent = ""; fehltGeholt.clear();
     document.querySelectorAll("#statusSeg .cnt").forEach(n => n.remove());
     leadSeq++; erlSeq++; clearTimeout(leadRetryT); clearTimeout(leadsT); leadRetryMs = 5000; lTouched = new Map(); lWeg = new Set(); lAufr.clear(); abg = erlNeu(); arc = erlNeu();
-    state.leads = new Map(); state.leadsLoaded = false; state.leadsErr = false; state.lfilter = "offen"; lOffen = new Set(); kInFlug.clear(); terminOffen.clear(); verknOffen.clear();
+    state.leads = new Map(); state.leadsLoaded = false; state.leadsErr = false; state.lfilter = "offen"; lOffen = new Set(); kInFlug.clear(); terminOffen.clear(); verknOffen.clear(); lVersuchOffen = null;
     $("leadList").replaceChildren(); $("leadCount").textContent = "";
     nachSeq++; nerlSeq++; clearTimeout(nachRetryT); clearTimeout(nachT); nachRetryMs = 5000; nTouched = new Map(); nWeg = new Set(); nerl = erlNeu(); nRotSig = "";
     state.nach = new Map(); state.nachLoaded = false; state.nachErr = false; state.nfilter = "offen";
-    $("nachList").replaceChildren(); $("nachCount").textContent = "";
+    $("nachList").replaceChildren(); $("nachCount").textContent = ""; $("eskList").replaceChildren(); $("eskCount").textContent = "";
+    aufSeq++; clearTimeout(aufRetryT); clearTimeout(aufT); aufT = null; aufLaedt = false; clearTimeout(aufPopT); aufPopT = 0; aufRetryMs = 5000; aTouched = new Map(); aWeg = new Set(); aFort = new Set();
+    aufGesehen.clear(); aufLaeuft.clear(); aufTaste = 0; aufLeute = []; aufMehr = false; aRotSig = "";
+    state.auf = new Map(); state.aufLoaded = false; state.aufErr = false;
+    $("aufList").replaceChildren(); $("aufCount").textContent = ""; fill($("aufPopListe"));
     state.events = new Map(); state.ranges = []; state.canWrite = false; state.person = ""; state.me = null; state.pdfBusy = false;
     // Laufende Zugangsprüfungen gehören zur alten Anmeldung
     meSeq++;
@@ -4187,7 +4891,7 @@
     clearTimeout(lFirstT);
     lFirstT = setTimeout(() => { if (!ljoined && !isLocked()) loadLeads(); }, 3000);
     clearTimeout(nFirstT);
-    nFirstT = setTimeout(() => { if (!njoined && !isLocked()) loadNach(); }, 3000);
+    nFirstT = setTimeout(() => { if (!njoined && !isLocked()) { loadNach(); loadAuf(); } }, 3000);
     // Zuerst ein Takt: läuft das gespeicherte Token bald ab (Seite kurz vor Ablauf geöffnet), wird es erneuert, bevor die ersten
     // Anfragen damit hinausgehen, und die Live-Kanäle treten erst danach bei, also mit dem neuen Token statt dem öffentlichen
     // Schlüssel. Sonst liest der Takt nur die gespeicherte Sitzung und ist sofort fertig.
@@ -4199,6 +4903,7 @@
     const me = state.me;
     $("me").textContent = !me || isLocked() ? "" : me.team ? "Team-Zugang" : (me.name || "");
     $("teamBtn").hidden = !me || !me.admin || isLocked();
+    aufWer();
   }
   // Fragt die Datenbank, ob dieses Konto (noch) Zugang hat und wie die Person heißt. Ohne Verbindung bleibt alles, wie es ist.
   // Antwort: "ok", "weg" (abgemeldet) oder "offen" (keine Antwort).
@@ -4217,6 +4922,8 @@
     if (r.error) { if (loggedOut(r.error)) { lockOut("Die Anmeldung ist abgelaufen. Bitte erneut anmelden."); return "weg"; } return "offen"; }
     if (!r.data) { accessGone(); return "weg"; }
     meAt = Date.now(); state.me = r.data; showMe();
+    // Einer anderen Person gegebene Aufgaben kommen nicht live an (sie ist dann nicht mehr lesbar): bei jeder Nachfrage abgleichen
+    if (state.aufLoaded && !r.data.team && !istVerwalter()) aufAbgleich();
     return "ok";
   }
   // Zugang entzogen (gesperrt, neuer Code, Team-Passwort abgeschaltet) oder neues Passwort auf einem anderen Gerät festgelegt
@@ -4559,6 +5266,7 @@
   };
   // Umbenennen direkt in der Zeile, z. B. wenn „User 1“ an eine neue Person geht
   function renameRow(li, p) {
+    const aufHin = el("span");
     const inp = el("input", { type: "text", maxlength: "40", value: p.name, autocomplete: "off", "aria-label": `Neuer Name für ${p.name}` });
     li.replaceChildren(el("form", { class: "ren", novalidate: true, onsubmit: (ev) => {
       ev.preventDefault();
@@ -4568,8 +5276,14 @@
       teamAct({ aktion: "umbenennen", person: p.id, name }, () => toast(`${p.name} heißt jetzt ${name}`));
     } }, inp,
       el("span", { class: "pa" }, el("button", { class: "btn primary", type: "submit" }, "Speichern"), el("button", { class: "btn", type: "button", onclick: () => drawTeam() }, "Abbrechen")),
-      p.eingerichtet ? el("span", { class: "ps note" }, "Bekommt jemand anderes diesen Zugang, danach „Neuer Code“ drücken. Dann gilt das alte Passwort nicht mehr.") : null));
+      p.eingerichtet ? el("span", { class: "ps note" }, "Bekommt jemand anderes diesen Zugang, danach „Neuer Code“ drücken. Dann gilt das alte Passwort nicht mehr.", aufHin) : null));
     inp.focus(); inp.select();
+    // Aufgaben hängen am Zugang, nicht am Namen: wer ihn bekommt, sieht auch die bisherigen
+    if (p.eingerichtet && istVerwalter() && sb) sb.from(AT).select("id").eq("fuer", p.id).limit(101).then(r => {
+      if (r.error || !Array.isArray(r.data) || !r.data.length || !aufHin.isConnected) return;
+      const n = r.data.length;
+      aufHin.textContent = ` An diesen Zugang ${n === 1 ? "ist eine Aufgabe" : `sind ${n > 100 ? "über 100" : n} Aufgaben`} vergeben (offene und erledigte). Sie gehen mit über, also vorher löschen oder jemand anderem geben.`;
+    }, () => {});
   }
   let teamData = null;
   function drawTeam() {
@@ -4651,15 +5365,18 @@
   const PFELD = { titel: "Kunde und Projekt", art: "Art", unterschrieben_am: "Unterschrieben am", auftragsnr: "Auftragsnummer", verantwortlich: "Verantwortlich", notiz: "Notiz", status: "Stand" };
   const pwert = (k, v) => v == null || v === "" ? "–" : k === "unterschrieben_am" ? dmy(v) : k === "art" ? artLabel(v) : k === "status" ? (STAND[v] || String(v)) : String(v);
   const LFELD = { kunde: "Kunde", art: "Interesse", quelle: "Leadquelle", angelegt_von: "Eingetragen von", eingang: "Eingang", notiz: "Notiz", status: "Stand",
-    kontaktiert_am: "Kontaktiert am", kontaktiert_von: "Kontaktiert von", bild: "Screenshot", grund: "Begründung", termin_datum: "Termin am", termin_zeit: "Termin um",
-    archiviert: "Archiviert" };
+    kontaktiert_am: "Erreicht am", kontaktiert_von: "Erreicht von", versuch_nr: "Kontaktversuche", versuch_am: "Letzter Versuch am", versuch_von: "Letzter Versuch von",
+    bild: "Screenshot", grund: "Begründung", termin_datum: "Termin am", termin_zeit: "Termin um", archiviert: "Archiviert" };
   // Den Screenshot nur kurz benennen (Anfang des zufälligen Dateinamens), damit ein Austausch erkennbar ist
-  const lwert = (k, v) => v == null || v === "" ? "–" : k === "eingang" || k === "kontaktiert_am" ? fmtWhen(v) : k === "art" ? leadArtLabel(v)
+  const lwert = (k, v) => v == null || v === "" ? "–" : k === "eingang" || k === "kontaktiert_am" || k === "versuch_am" ? fmtWhen(v) : k === "art" ? leadArtLabel(v)
     : k === "termin_datum" ? dmy(v) : k === "termin_zeit" ? v + " Uhr" : k === "archiviert" ? (v ? "ja" : "nein")
     : k === "status" ? (LSTAND[v] || String(v)) : k === "bild" ? "Bild " + String(String(v).split("/")[1] || "").slice(0, 8) : String(v);
   const NFELD = { titel: "Was ist offen", kunde: "Kunde/Baustelle", art: "Art", status: "Stand", zustaendig: "Zuständig", vorgang: "Vorgangsnummer",
-    wiedervorlage: "Wiedervorlage", notiz: "Beschreibung" };
-  const nwert = (k, v) => v == null || v === "" ? "–" : k === "wiedervorlage" ? dmy(v) : k === "art" ? nachArtLabel(v) : k === "status" ? (NSTAND[v] || String(v)) : String(v);
+    wiedervorlage: "Wiedervorlage", notiz: "Beschreibung", eskaliert: "Eskaliert" };
+  const nwert = (k, v) => v == null || v === "" ? "–" : k === "wiedervorlage" ? dmy(v) : k === "art" ? nachArtLabel(v) : k === "status" ? (NSTAND[v] || String(v))
+    : k === "eskaliert" ? (v ? "ja" : "nein") : String(v);
+  const AFELD = { titel: "Aufgabe", fuer_name: "Für", faellig: "Erledigen bis", beschreibung: "Beschreibung", erledigt: "Erledigt" };
+  const awert = (k, v) => v == null || v === "" ? "–" : k === "faellig" ? dmy(v) : k === "erledigt" ? (v ? "ja" : "nein") : String(v);
   const diff = (felder, alt, neu, w) => Object.keys(felder).filter(k => JSON.stringify(alt?.[k] ?? null) !== JSON.stringify(neu?.[k] ?? null))
     .map(k => `${felder[k]}: ${w(k, alt?.[k])} → ${w(k, neu?.[k])}`);
   // Ein Eintrag als Text: Zeit, wer, was. Bei Änderungen die Felder vorher → nachher, beim Anlegen und Löschen der ganze Termin
@@ -4693,12 +5410,25 @@
     if (x.art === "nacharbeit") {
       // Bei Änderungen steht statt des Verlaufs nur der neue Vermerk im Protokoll, beim Löschen der ganze Verlauf
       const t = x.nachher || x.vorher || {};
-      const was = `Nacharbeit „${t.titel || "–"}“ ${x.aktion}`;
-      const details = x.aktion === "geändert" ? diff(NFELD, x.vorher, x.nachher, nwert)
-        : Object.keys(NFELD).filter(k => k !== "titel" && t[k] != null && t[k] !== "").map(k => `${NFELD[k]}: ${nwert(k, t[k])}`);
+      // Eskalieren und Aufheben stehen im Titel
+      const a = !!x.vorher?.eskaliert, e = !!x.nachher?.eskaliert, umEsk = x.aktion === "geändert" && a !== e;
+      const was = `Nacharbeit „${t.titel || "–"}“ ${umEsk ? (e ? "eskaliert" : "nicht mehr eskaliert") : x.aktion}`;
+      const details = x.aktion === "geändert" ? diff(NFELD, x.vorher, x.nachher, nwert).filter(d => !umEsk || !d.startsWith(NFELD.eskaliert + ":"))
+        : Object.keys(NFELD).filter(k => k !== "titel" && t[k] != null && t[k] !== "" && !(k === "eskaliert" && !t[k])).map(k => `${NFELD[k]}: ${nwert(k, t[k])}`);
       if (x.nachher && x.nachher.vermerk) details.push(`Vermerk: ${x.nachher.vermerk}`);
       if (x.aktion === "gelöscht" && t.verlauf) details.push(`Verlauf: ${String(t.verlauf).split("\n").join(" | ")}`);
       return { was, details };
+    }
+    if (x.art === "aufgabe") {
+      // Erledigt und wieder geöffnet stehen im Titel; für wen steht immer dabei
+      const t = x.nachher || x.vorher || {};
+      if (x.aktion === "geändert") {
+        const a = !!x.vorher?.erledigt, n = !!x.nachher?.erledigt;
+        return { was: `Aufgabe „${t.titel || "–"}“ für ${t.fuer_name || "–"} ${a === n ? "geändert" : n ? "erledigt" : "wieder geöffnet"}`,
+          details: diff(AFELD, x.vorher, x.nachher, awert).filter(d => a === n || !d.startsWith(AFELD.erledigt + ":")) };
+      }
+      return { was: `Aufgabe „${t.titel || "–"}“ ${x.aktion === "angelegt" ? "vergeben" : x.aktion}`,
+        details: Object.keys(AFELD).filter(k => k !== "titel" && t[k] != null && t[k] !== "" && !(k === "erledigt" && !t[k])).map(k => `${AFELD[k]}: ${awert(k, t[k])}`) };
     }
     if (x.art !== "termin") return { was: "Zugang" + (x.person ? ` ${x.person}` : "") + `: ${x.aktion}`, details: [] };
     const t = x.nachher || x.vorher || {};
