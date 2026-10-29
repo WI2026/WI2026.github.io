@@ -61,6 +61,8 @@
     { id: "energiemanagement", label: "Energiemanagement" },
   ];
   const leadArtLabel = (id) => (LEAD_ARTEN.find(a => a.id === id) || LEAD_ARTEN[0]).label;
+  // Trennstellen für schmale Kanban-Spalten (weiches Trennzeichen, nur sichtbar, wenn dort umbrochen wird)
+  const ART_TRENN = { waermepumpe: "Wärme\u00ADpumpe", klima: "Klima\u00ADanlage", batterie: "Batterie\u00ADerweiterung", energiemanagement: "Energie\u00ADmanagement" };
   // Stände in der Reihenfolge des Ablaufs: nicht bearbeitet (24-Stunden-Regel), Kontaktversuch (angerufen, nicht erreicht; wieder
   // 24 Stunden bis zum nächsten Versuch), Rückfragen, Online-Meeting notwendig (beide: erreicht, noch kein Termin),
   // erledigt (Termin festgelegt oder ohne Termin abgeschlossen); mit Begründung: reklamiert, storniert, verloren
@@ -427,8 +429,12 @@
     return wrap;
   }
 
+  // Spalten nach der gezeichneten Lage, nicht nach den reinen Uhrzeiten: Beginn vor 6 Uhr steht oben am Raster, und jeder Block ist mindestens
+  // 22 px hoch (gut 25 Minuten). Sonst lägen ein früher oder sehr kurzer Termin und der nächste übereinander. Ab 25 Minuten zählt die echte
+  // Dauer, damit gewöhnliche Termine hintereinander die volle Breite behalten.
   function layoutBlocks(evs) {
-    const items = evs.map(e => ({ e, s: toMin(e.start), en: Math.max(toMin(e.end), toMin(e.start) + 20) })).sort((a, b) => a.s - b.s || b.en - a.en);
+    const items = evs.map(e => { const s = Math.max(toMin(e.start), H_START * 60); return { e, s, en: Math.max(Math.min(toMin(e.end), H_END * 60), s + 25) }; })
+      .sort((a, b) => a.s - b.s || b.en - a.en);
     const out = []; let cluster = [], lanesEnd = [], clusterEnd = -1;
     const flush = () => { const n = lanesEnd.length || 1; cluster.forEach(c => out.push({ e: c.e, lane: c.lane, lanes: n })); cluster = []; lanesEnd = []; };
     for (const it of items) {
@@ -782,7 +788,10 @@
           leadHinweisWeg = true; zeigLeadHinweis(null); $("form").requestSubmit();
         } }, "Ohne Lead speichern")));
     box.hidden = false;
-    $("leadHinweisJa").focus();
+    // Der Hinweis steht direkt über Speichern/Abbrechen am Ende des Fensters: ans Ende scrollen (mit dem unteren Rand), damit beides ganz im Bild
+    // ist; nur auf den Knopf zu scrollen schnitte den Kasten unten ab. Passt beides nicht, geht der Kasten vor.
+    $("leadHinweisJa").focus({ preventScroll: true });
+    const dlg = $("dlg"); dlg.scrollTop = dlg.scrollHeight; box.scrollIntoView({ block: "nearest" });
   }
   $("f-title").addEventListener("input", () => { if (!$("leadHinweis").hidden) zeigLeadHinweis(null); });
   function wipeTermin() {
@@ -2382,7 +2391,7 @@
         ondragend: (ev) => { kZieht = null; ev.currentTarget.classList.remove("zieht"); document.querySelectorAll(".kspalte.ueber").forEach(s => s.classList.remove("ueber")); } },
       el("span", { class: "kk1" }, el("span", { class: "ltn" }, l.kunde),
         l.bild ? el("span", { class: "lbi", title: "mit Screenshot" }, svgBild(), el("span", { class: "sr" }, "mit Screenshot")) : null),
-      el("span", { class: "kk2" }, el("span", { class: "badge lart" }, leadArtLabel(l.art)),
+      el("span", { class: "kk2" }, el("span", { class: "badge lart" }, ART_TRENN[l.art] || leadArtLabel(l.art)),
         l.status === "rueckfrage" || l.status === "meeting" ? standBadge(l.status) : null, l.quelle ? el("span", { class: "lq" }, l.quelle) : null),
       grund ? el("span", { class: "kgrund" }, l.grund) : null,
       el("span", { class: "lf " + f.cls }, f.kids));

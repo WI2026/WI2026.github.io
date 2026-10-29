@@ -889,6 +889,12 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .lsx span { font-size: 12.5px; color: var(--fg-2); }
 .lstand[data-s="ueber"] .lsx span { color: color-mix(in srgb, var(--today) 85%, var(--fg)); font-weight: 600; }
 @media (max-width: 480px) { .lstand { grid-template-columns: auto minmax(0, 1fr); } .lstand > .btn, .lstand .lsb { grid-column: 1 / -1; } .lstand .lsb { justify-content: stretch; } .lstand .lsb .btn { flex: 1 1 auto; } }
+/* Ab zwei Knöpfen (Lead, Nacharbeit, Hinweis im Termin) ist neben dem Text kein Platz: sonst drückten sie ihn auf wenige Pixel zusammen
+   und lägen über der Schrift. Sie stehen dann unter dem Text, bündig mit ihm; ein einzelner Knopf bleibt rechts daneben. */
+@media (min-width: 481px) {
+  .lstand:has(> :is(.lsb, .lsacts) > button:nth-of-type(2)) { grid-template-columns: auto minmax(0, 1fr); }
+  .lstand:has(> :is(.lsb, .lsacts) > button:nth-of-type(2)) > :is(.lsb, .lsacts) { grid-column: 2; justify-content: flex-start; margin-top: 4px; }
+}
 @media (pointer: coarse) { .lstand .btn, .lbild .btn.small { height: 44px; } }
 
 .lbild { display: grid; gap: 8px; min-width: 0; }
@@ -1046,9 +1052,13 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
   overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x mandatory; scrollbar-width: thin;
   margin-inline: -16px; padding: 2px 16px 10px; scroll-padding-inline: 16px;
 }
-/* Am PC alle sechs Spalten nebeneinander, ohne Querscrollen */
+/* Am PC alle Spalten in einer Reihe, gleich breit und ohne Querscrollen, so viele es Stände gibt. Köpfe und Karten liegen in zwei
+   gemeinsamen Zeilen (Unterraster): ein zweizeiliger Kopf rückt alle Spalten mit, die ersten Karten stehen auf einer Linie, und jede
+   Spalte reicht bis unten (größere Ablagefläche beim Ziehen). */
 @media (min-width: 961px) {
-  .kboard { grid-auto-flow: row; grid-template-columns: repeat(6, minmax(0, 1fr)); grid-auto-columns: auto; gap: 8px; margin-inline: 0; padding-inline: 0; scroll-snap-type: none; }
+  /* overflow sichtbar: die Bahnen scrollen hier nie quer, und so schneidet die Tafel ihre Schatten nicht in einer geraden Kante ab */
+  .kboard { grid-auto-columns: minmax(0, 1fr); grid-template-rows: auto auto; gap: 8px; margin-inline: 0; padding-inline: 0; scroll-snap-type: none; overflow: visible; }
+  .kspalte { grid-row: span 2; grid-template-rows: subgrid; }
 }
 .kspalte {
   --c: var(--fg-3);
@@ -1057,20 +1067,21 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
   -webkit-backdrop-filter: blur(28px) saturate(180%); backdrop-filter: blur(28px) saturate(180%);
   transition: box-shadow 140ms ease, background-color 140ms ease;
 }
-/* min-width: 0, damit ein langer Titel mit „…“ kürzt, statt die Spalte zu sprengen */
+/* Titel und Zahl laufen als Text: ein langer Titel bricht in eine zweite Zeile (mit Silbentrennung) statt mit „…“ abzubrechen,
+   die Zahl folgt dem letzten Wort. Der Punkt hängt links davor (beide Zeilen stehen bündig) und kann nicht allein in einer Zeile landen. */
 .kspalte > h3 {
-  display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; padding: 4px 6px 2px;
-  font-size: 13px; font-weight: 650; letter-spacing: 0; color: var(--fg);
+  position: relative; min-width: 0; margin: 0; padding: 4px 6px 2px 22px;
+  font-size: 13px; font-weight: 650; line-height: 20px; letter-spacing: 0; color: var(--fg);
+  overflow-wrap: break-word; -webkit-hyphens: auto; hyphens: auto; text-wrap: balance;
 }
-.kspalte > h3 i { width: 8px; height: 8px; flex: none; border-radius: 50%; background: var(--c); }
-.kspalte > h3 > span:first-of-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kspalte > h3 i { position: absolute; left: 6px; top: 10px; width: 8px; height: 8px; border-radius: 50%; background: var(--c); }
 .kspalte > h3 .num {
-  margin-left: auto; min-width: 22px; height: 20px; padding-inline: 7px; border-radius: 999px; display: inline-grid; place-items: center;
+  margin-left: 6px; vertical-align: top; min-width: 22px; height: 20px; padding-inline: 7px; border-radius: 999px; display: inline-grid; place-items: center;
   font-size: 11.5px; font-weight: 650; color: var(--fg-2); background: var(--surface-2);
 }
 /* Beim Ziehen: die Spalte unter dem Zeiger zeigt, wohin der Lead kommt */
 .kspalte.ueber { background: color-mix(in srgb, var(--c) 14%, var(--surface)); box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 70%, transparent), var(--shadow); }
-.kkarten { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
+.kkarten { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; align-content: start; }
 .kkarte {
   position: relative; display: grid; gap: 6px; width: 100%; padding: 11px 12px; border-radius: 14px; text-align: left; cursor: pointer; color: var(--fg);
   border: 1px solid var(--line); background: var(--solid); box-shadow: 0 1px 2px rgba(0,0,0,.06);
@@ -1089,7 +1100,11 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .kk1 .ltn { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .kk1 .lbi { margin-left: auto; margin-top: 1px; }
 .kk2 { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; min-width: 0; }
-.kk2 .badge { display: inline-block; flex: 0 1 auto; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; line-height: 20px; }
+/* Reicht die Spalte nicht, bricht die Plakette an der Silbe um („Energie-“ / „management“, Trennstelle aus kKarte) statt mit „…“ abzubrechen */
+.kk2 .badge {
+  display: inline-block; flex: 0 1 auto; max-width: 100%; height: auto; min-height: 20px; padding-block: 2px; line-height: 16px; border-radius: 10px;
+  white-space: normal; overflow-wrap: break-word;
+}
 .kk2 .lq { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--fg-3); }
 .kgrund {
   font-size: 12.5px; line-height: 1.35; color: var(--fg-2); overflow-wrap: anywhere;
@@ -1099,12 +1114,24 @@ dialog > .toast[hidden] { transform: translate(-50%, -12px); }
 .kkarte .lf { grid-area: auto; justify-self: start; font-size: 12.5px; white-space: normal; }
 .kkarte .lf svg { width: 14px; height: 14px; }
 .kleer {
-  margin: 0; padding: 18px 10px; border-radius: 14px; border: 1.5px dashed var(--line); text-align: center;
+  align-self: start; margin: 0; padding: 18px 10px; border-radius: 14px; border: 1.5px dashed var(--line); text-align: center;
   font-size: 12.5px; color: var(--fg-3);
 }
-/* Am PC bis 1200 px etwas enger gepolstert (nach den Grundregeln, damit es greift) */
-@media (min-width: 961px) and (max-width: 1199px) {
+/* Am PC bis 1365 px etwas enger gepolstert, damit „Energiemanagement“ ab 1280 px in eine Zeile passt; bis 1200 px auch die Köpfe eine Spur
+   kleiner, damit „Kontaktversuch,“ in eine Zeile passt (nach den Grundregeln, damit es greift) */
+@media (min-width: 961px) and (max-width: 1365px) {
   .kspalte { padding: 8px; }
   .kkarte { padding: 10px; }
+}
+@media (min-width: 961px) and (max-width: 1199px) {
+  .kboard { gap: 6px; }
+  .kspalte > h3 { padding-inline: 14px 2px; font-size: 12px; }
+  .kspalte > h3 i { left: 2px; top: 10.5px; width: 7px; height: 7px; }
+  .kspalte > h3 .num { margin-left: 4px; min-width: 20px; padding-inline: 6px; font-size: 11px; }
+}
+@media (min-width: 961px) and (max-width: 1099px) {
+  .kspalte { padding: 6px; }
+  .kspalte > h3 { padding-right: 0; }
+  .kkarte { padding: 9px; }
 }
 @media (prefers-reduced-motion: reduce) { .kkarte, .kspalte { transition: none; } .kkarte:active { transform: none; } }
